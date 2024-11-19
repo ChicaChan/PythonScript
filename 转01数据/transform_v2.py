@@ -29,5 +29,4 @@ for column in df.columns:
 print("单选题:", single_choice_columns)
 print("多选题:", multi_choice_columns)
 
-# 保存转换后的数据到Excel文件
 df.to_excel('transformed_datav2.xlsx', index=False)
