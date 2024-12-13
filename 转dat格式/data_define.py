@@ -1,17 +1,14 @@
 # -*- coding: utf-8 -*-
 import os
 import pandas as pd
-import re
-import csv
 
 
-def clear_screen():
-    os.system('cls' if os.name == 'nt' else 'clear')
+def read_and_round_csv(file_path, decimal_places=0):
+    df = pd.read_csv(file_path)
 
-
-def read_and_round_csv(file_path, decimal_places=5):
-    df = pd.read_csv(file_path, dtype=str)
+    # 将数值型字段四舍五入到整数
     df[df.select_dtypes(include=['number']).columns] = df.select_dtypes(include=['number']).round(decimal_places)
+
     return df
 
 
@@ -32,15 +29,18 @@ def replace_missing_values(df, fill_value=" "):
 
 
 def create_fixed_width_data(df):
+    # 使用字符串表示的所有字段来计算最大长度
     max_lengths = df.astype(str).map(len).max()
     max_lengths = max_lengths.clip(lower=6)
-    df = df.apply(lambda col: col.str.ljust(max_lengths[col.name]), axis=0)
+
+    # 将所有字段转换为字符串，并应用str.ljust
+    df = df.astype(str).apply(lambda col: col.str.ljust(max_lengths[col.name]))
     return df, max_lengths
 
 
 def create_define_steps(df, max_lengths, attribute):
     starts = [sum(max_lengths.iloc[:i]) + i + 1 for i in range(len(df.columns))]
-    ends = [starts[i] + max_lengths[i] - 1 for i in range(len(df.columns))]
+    ends = [starts[i] + max_lengths.iloc[i] - 1 for i in range(len(df.columns))]
 
     define_steps = []
     for col, start, end, col_type in zip(df.columns, starts, ends, attribute['type']):
@@ -75,12 +75,17 @@ def create_make_steps(df):
     return make_steps
 
 
-def main():
-    clear_screen()
-    os.chdir("D:\\办公软件\\DP小工具\\2.转dat格式")
+def print_dc_fields(define_file_path):
+    with open(define_file_path, 'r') as f:
+        lines = f.readlines()
 
-    filename = "ditu4"
-    df = read_and_round_csv(f"./{filename}.csv")
+    dc_fields = [line.strip() for line in lines if line.startswith('dc')]
+    for field in dc_fields:
+        print(field)
+
+
+def main():
+    df = read_and_round_csv(f"./{filename}.csv", decimal_places=0)  # Set decimal_places to 0 to keep only integers
 
     # 获取以"R#"开头的列名
     r_columns = df.columns[df.columns.str.startswith('R#')]
@@ -95,23 +100,26 @@ def main():
     define_steps = create_define_steps(df, max_lengths, attribute)
     make_steps = create_make_steps(df)
 
-    # 删除双引号
-    define_steps = [step.replace('"', '') for step in define_steps]
+    define_steps = [step.replace('_', '0') for step in define_steps]
 
-    with open(f"{filename}define.stp", 'w') as f:
+    define_file_path = f"{filename}define1.stp"
+    with open(define_file_path, 'w') as f:
         for step in define_steps:
             f.write(step + '\n')
 
-    with open(f"{filename}make.stp", 'w') as f:
+    with open(f"{filename}make1.stp", 'w') as f:
         for step in make_steps:
             f.write(step + '\n')
 
-    df.to_csv(f"{filename}.dat", index=False, header=False)
-    # pd.DataFrame(make_steps, columns=['make']).to_csv(f"{filename}make.stp", index=False, header=False)
+    with open(f"{filename}1.dat", 'w') as f:
+        for index, row in df.iterrows():
+            f.write(' '.join([str(value).replace(',', '') for value in row]) + '\n')
 
-    print(attribute[attribute['type'] == 'character'])
+    # 打印出所有以dc开头的字段
+    print_dc_fields(define_file_path)
 
 
 if __name__ == "__main__":
+    os.chdir("D:\\办公软件\\DP小工具\\2.转dat格式")
+    filename = "ditu4"
     main()
-
