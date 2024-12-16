@@ -4,7 +4,7 @@ import pandas as pd
 
 
 def read_and_round_csv(file_path, decimal_places=0):
-    df = pd.read_csv(file_path)
+    df = pd.read_csv(file_path, encoding='gbk')
 
     # 将数值型字段四舍五入到整数
     df[df.select_dtypes(include=['number']).columns] = df.select_dtypes(include=['number']).round(decimal_places)
@@ -64,7 +64,7 @@ def create_make_steps(df):
 
     make_steps = [
         "[*data ttl(;)=",
-        *[f"{col};{count}" for col, count in filtered_multi_choice_cols.items()],
+        *[f"{col};{count};" for col, count in filtered_multi_choice_cols.items()],
         "]",
         "[*do i=1:[ttl.#]/2]",
         "   [*do a=1:[ttl.i*2]]",
@@ -85,12 +85,11 @@ def print_dc_fields(define_file_path):
 
 
 def main():
-    df = read_and_round_csv(f"./{filename}.csv", decimal_places=0)  # Set decimal_places to 0 to keep only integers
+    df = read_and_round_csv(f"./{filename}.csv", decimal_places=0)
 
     # 获取以"R#"开头的列名
     r_columns = df.columns[df.columns.str.startswith('R#')]
 
-    # 使用列名来过滤DataFrame
     df = df.drop(columns=r_columns)
 
     df = replace_column_dots(df)
@@ -102,18 +101,28 @@ def main():
 
     define_steps = [step.replace('_', '0') for step in define_steps]
 
-    define_file_path = f"{filename}define1.stp"
+    define_file_path = f"{filename}define.stp"
     with open(define_file_path, 'w') as f:
         for step in define_steps:
             f.write(step + '\n')
 
-    with open(f"{filename}make1.stp", 'w') as f:
+    with open(f"{filename}make.stp", 'w') as f:
         for step in make_steps:
             f.write(step + '\n')
 
-    with open(f"{filename}1.dat", 'w') as f:
-        for index, row in df.iterrows():
-            f.write(' '.join([str(value).replace(',', '') for value in row]) + '\n')
+    # 将 DataFrame 中的 NaN 值替换为整数 0
+    df = df.fillna(0)
+
+    # 将 DataFrame 中的数值列转换为整数
+    df[df.select_dtypes(include=['number']).columns] = df.select_dtypes(include=['number']).astype(int)
+
+    # 将 DataFrame 转换为固定宽度的字符串格式
+    fixed_width_data = df.apply(lambda x: x.str.ljust(max_lengths[x.name]), axis=0)
+
+    # 输出为 .dat 文件
+    with open(f"{filename}.dat", 'w') as f:
+        for index, row in fixed_width_data.iterrows():
+            f.write(''.join(row) + '\n')
 
     # 打印出所有以dc开头的字段
     print_dc_fields(define_file_path)
@@ -121,5 +130,5 @@ def main():
 
 if __name__ == "__main__":
     os.chdir("D:\\办公软件\\DP小工具\\2.转dat格式")
-    filename = "ditu4"
+    filename = "jdcdata"
     main()
