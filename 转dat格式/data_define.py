@@ -3,12 +3,12 @@ import os
 import pandas as pd
 
 
-def read_and_round_csv(file_path, decimal_places=0):
+def read_and_round_csv(file_path):
     df = pd.read_csv(file_path, encoding='gbk')
 
-    # 将数值型字段四舍五入到整数
-    df[df.select_dtypes(include=['number']).columns] = df.select_dtypes(include=['number']).round(decimal_places)
-
+    # 将所有数值型字段四舍五入
+    for col in df.select_dtypes(include=['float64']).columns:
+        df[col] = df[col].round(0)  # 四舍五入
     return df
 
 
@@ -19,23 +19,21 @@ def replace_column_dots(df):
 
 def determine_column_types(df):
     attribute = pd.DataFrame({'colname': df.columns, 'type': 'character'})
-    numeric_columns = df.select_dtypes(include=['float64', 'int64']).columns
-    attribute.loc[attribute['colname'].isin(numeric_columns), 'type'] = 'numeric'
+    numeric_columns = df.select_dtypes(include=['int64']).columns
+    attribute.loc[attribute['colname'].isin(numeric_columns), 'type'] = 'integer'
+
+    # 检查浮点数列并标记为numeric
+    float_columns = df.select_dtypes(include=['float64']).columns
+    attribute.loc[attribute['colname'].isin(float_columns), 'type'] = 'numeric'
+
     return attribute
-
-
-def replace_missing_values(df, fill_value=" "):
-    return df.fillna(fill_value)
 
 
 def create_fixed_width_data(df):
     # 使用字符串表示的所有字段来计算最大长度
-    max_lengths = df.astype(str).map(len).max()
-    max_lengths = max_lengths.clip(lower=6)
-
-    # 将所有字段转换为字符串，并应用str.ljust
-    df = df.astype(str).apply(lambda col: col.str.ljust(max_lengths[col.name]))
-    return df, max_lengths
+    max_lengths = df.astype(str).apply(lambda x: x.str.len()).max()
+    max_lengths = max_lengths.clip(lower=6)  # 确保最小长度为6
+    return df.astype(str), max_lengths
 
 
 def create_define_steps(df, max_lengths, attribute):
@@ -45,9 +43,11 @@ def create_define_steps(df, max_lengths, attribute):
     define_steps = []
     for col, start, end, col_type in zip(df.columns, starts, ends, attribute['type']):
         if col_type == 'character':
-            define_steps.append(f"dc ${col}=${start}-{end},")
-        else:
-            define_steps.append(f"di ${col}=${start}-{end},")
+            define_steps.append(f"dc ${col}=${start}-${end},")
+        elif col_type == 'integer':
+            define_steps.append(f"di ${col}=${start}-${end},")
+        elif col_type == 'numeric':
+            define_steps.append(f"dw ${col}=${start}-${end},")
     return define_steps
 
 
@@ -85,16 +85,15 @@ def print_dc_fields(define_file_path):
 
 
 def main():
-    df = read_and_round_csv(f"./{filename}.csv", decimal_places=0)
+    df = read_and_round_csv(f"./{filename}.csv")
 
     # 获取以"R#"开头的列名
     r_columns = df.columns[df.columns.str.startswith('R#')]
-
     df = df.drop(columns=r_columns)
 
     df = replace_column_dots(df)
     attribute = determine_column_types(df)
-    df = replace_missing_values(df)
+
     df, max_lengths = create_fixed_width_data(df)
     define_steps = create_define_steps(df, max_lengths, attribute)
     make_steps = create_make_steps(df)
@@ -110,22 +109,62 @@ def main():
         for step in make_steps:
             f.write(step + '\n')
 
-    # 将 DataFrame 中的 NaN 值替换为整数 0
-    df = df.fillna(0)
+    # 将空值替换为 NaN
+    df = df.where(pd.notnull(df), None)
 
-    # 将 DataFrame 中的数值列转换为整数
-    df[df.select_dtypes(include=['number']).columns] = df.select_dtypes(include=['number']).astype(int)
+    # 输出为 .dat 文件，确保每列之间有空格分隔
+    with open(f"{filename}1.dat", 'w') as f:
+        for index, row in df.iterrows():
+            # 处理缺失值，保持为空字符串
+            row_data = [value if value is not None else 'nan' for value in row]  # 保持原值
 
-    # 将 DataFrame 转换为固定宽度的字符串格式
-    fixed_width_data = df.apply(lambda x: x.str.ljust(max_lengths[x.name]), axis=0)
+            # 确保每列的宽度至少为 6
+            formatted_row = []
+            for i, value in enumerate(row_data):
+                width = max(6, max_lengths[i])  # 确保宽度至少为 6
+                formatted_row.append(value.rjust(width))  # 使用 rjust 填充宽度
 
-    # 输出为 .dat 文件
-    with open(f"{filename}.dat", 'w') as f:
-        for index, row in fixed_width_data.iterrows():
-            f.write(''.join(row) + '\n')
+            f.write(''.join(formatted_row).replace('nan', ' ') + '\n')  # 使用空字符串连接每列
+
+    # 后处理 .dat 文件，确保每列宽度至少为 6
+    post_process_dat_file(f"{filename}1.dat", max_lengths)
 
     # 打印出所有以dc开头的字段
     print_dc_fields(define_file_path)
+
+
+def post_process_dat_file(file_path, max_lengths):
+    # 读取文件内容
+    with open(file_path, 'r') as f:
+        lines = f.readlines()
+
+    # 处理每一行
+    with open(file_path, 'w') as f:
+        for line in lines:
+            # 去除 'nan' 字符串
+            line = line.replace('nan', '')
+            # 将一位小数转换为整数
+            new_line = []
+            for x in line.split():
+                try:
+                    # 尝试将字符串转换为浮点数
+                    num = float(x)
+                    # 检查是否为一位小数
+                    if num.is_integer():
+                        new_line.append(str(int(num)))  # 转换为整数
+                    else:
+                        new_line.append(x)  # 保持原值
+                except ValueError:
+                    new_line.append(x)  # 如果无法转换，保持原值
+
+            # 确保每列的宽度至少为 6
+            formatted_row = []
+            for i, value in enumerate(new_line):
+                # 使用 max_lengths 来确定每列的宽度
+                width = max(6, max_lengths[i])  # 确保宽度至少为 6
+                formatted_row.append(value.rjust(width))  # 使用 rjust 填充宽度
+
+            f.write(''.join(formatted_row) + '\n')
 
 
 if __name__ == "__main__":
