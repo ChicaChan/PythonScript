@@ -33,17 +33,17 @@ def create_fixed_width_data(df):
 
 
 def create_define_steps(df, max_lengths, attribute):
-    starts = [sum(max_lengths.iloc[:i]) + i for i in range(len(df.columns))]
+    starts = [sum(max_lengths.iloc[:i]) + 1 + i for i in range(len(df.columns))]
     ends = [starts[i] + max_lengths.iloc[i] - 1 for i in range(len(df.columns))]
 
     define_steps = []
     for col, start, end, col_type in zip(df.columns, starts, ends, attribute['type']):
         if col_type == 'character':
-            define_steps.append(f"dc {col}={start}-{end},")
+            define_steps.append(f"dc ${col}=${start}-{end},")
         elif col_type == 'integer':
-            define_steps.append(f"di {col}={start}-{end},")
+            define_steps.append(f"di ${col}=${start}-{end},")
         elif col_type == 'numeric':
-            define_steps.append(f"dw {col}={start}-{end},")
+            define_steps.append(f"di ${col}=${start}-{end},")
     return define_steps
 
 
