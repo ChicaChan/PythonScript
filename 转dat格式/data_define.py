@@ -26,10 +26,14 @@ def determine_column_types(df):
 
 
 def create_fixed_width_data(df):
+    # 创建一个临时DataFrame，去掉末尾的等号
+    temp_df = df.apply(lambda x: x.str.rstrip('=') if x.dtype == 'object' else x)
+
     # 使用字符串表示的所有字段来计算最大长度
-    max_lengths = df.astype(str).apply(lambda x: x.str.len()).max()
+    max_lengths = temp_df.astype(str).apply(lambda x: x.str.len()).max()
     max_lengths = max_lengths.clip(lower=6)  # 确保最小长度为6
-    return df.astype(str), max_lengths
+
+    return df, max_lengths  # 返回原始DataFrame和最大长度
 
 
 def create_define_steps(df, max_lengths, attribute):
@@ -119,11 +123,10 @@ def main():
             formatted_row = []
             for i, value in enumerate(row_data):
                 width = max(6, max_lengths[i])  # 确保宽度至少为 6
-                formatted_row.append(value.rjust(width))  # 使用 rjust 填充宽度
+                formatted_row.append(str(value).rjust(width))  # 使用 rjust 填充宽度
 
             f.write(''.join(formatted_row) + '\n')  # 使用空字符串连接每列
 
-    # 后处理 .dat 文件，确保每列宽度至少为 6
     post_process_dat_file(f"{filename}1.dat", max_lengths)
 
     # 打印出所有以dc开头的字段
@@ -150,7 +153,7 @@ def post_process_dat_file(file_path, max_lengths):
                     if num.is_integer():
                         new_line.append(str(int(num)))  # 转换为整数
                     else:
-                        new_line.append(x)  # 保持原值
+                        new_line.append(x)
                 except ValueError:
                     new_line.append(x)  # 如果无法转换，保持原值
 
@@ -159,7 +162,7 @@ def post_process_dat_file(file_path, max_lengths):
             for i, value in enumerate(new_line):
                 # 使用 max_lengths 来确定每列的宽度
                 width = max(6, max_lengths[i])  # 确保宽度至少为 6
-                formatted_value = value.rjust(width)  # 使用 rjust 填充宽度
+                formatted_value = str(value).rjust(width)  # 使用 rjust 填充宽度
                 formatted_row.append(formatted_value)
             f.write(''.join(formatted_row) + '\n')
 
