@@ -5,10 +5,6 @@ import pandas as pd
 
 def read_and_round_csv(file_path):
     df = pd.read_csv(file_path, encoding='gbk')
-
-    # 将所有数值型字段四舍五入
-    for col in df.select_dtypes(include=['float64']).columns:
-        df[col] = df[col].round(0)  # 四舍五入
     return df
 
 
@@ -37,17 +33,17 @@ def create_fixed_width_data(df):
 
 
 def create_define_steps(df, max_lengths, attribute):
-    starts = [sum(max_lengths.iloc[:i]) + i + 1 for i in range(len(df.columns))]
+    starts = [sum(max_lengths.iloc[:i]) + i for i in range(len(df.columns))]
     ends = [starts[i] + max_lengths.iloc[i] - 1 for i in range(len(df.columns))]
 
     define_steps = []
     for col, start, end, col_type in zip(df.columns, starts, ends, attribute['type']):
         if col_type == 'character':
-            define_steps.append(f"dc ${col}=${start}-${end},")
+            define_steps.append(f"dc {col}={start}-{end},")
         elif col_type == 'integer':
-            define_steps.append(f"di ${col}=${start}-${end},")
+            define_steps.append(f"di {col}={start}-{end},")
         elif col_type == 'numeric':
-            define_steps.append(f"dw ${col}=${start}-${end},")
+            define_steps.append(f"dw {col}={start}-{end},")
     return define_steps
 
 
@@ -63,7 +59,7 @@ def create_make_steps(df):
         return "No multiple choice, please check your input data."
 
     make_steps = [
-        "[*data ttl(;)=",
+        "[*data ttl(;)= ",
         *[f"{col};{count};" for col, count in filtered_multi_choice_cols.items()],
         "]",
         "[*do i=1:[ttl.#]/2]",
@@ -85,6 +81,7 @@ def print_dc_fields(define_file_path):
 
 
 def main():
+    filename = "data"
     df = read_and_round_csv(f"./{filename}.csv")
 
     # 获取以"R#"开头的列名
@@ -116,7 +113,7 @@ def main():
     with open(f"{filename}1.dat", 'w') as f:
         for index, row in df.iterrows():
             # 处理缺失值，保持为空字符串
-            row_data = [value if value is not None else 'nan' for value in row]  # 保持原值
+            row_data = [value if value is not None else '' for value in row]
 
             # 确保每列的宽度至少为 6
             formatted_row = []
@@ -124,7 +121,7 @@ def main():
                 width = max(6, max_lengths[i])  # 确保宽度至少为 6
                 formatted_row.append(value.rjust(width))  # 使用 rjust 填充宽度
 
-            f.write(''.join(formatted_row).replace('nan', ' ') + '\n')  # 使用空字符串连接每列
+            f.write(''.join(formatted_row) + '\n')  # 使用空字符串连接每列
 
     # 后处理 .dat 文件，确保每列宽度至少为 6
     post_process_dat_file(f"{filename}1.dat", max_lengths)
@@ -162,12 +159,12 @@ def post_process_dat_file(file_path, max_lengths):
             for i, value in enumerate(new_line):
                 # 使用 max_lengths 来确定每列的宽度
                 width = max(6, max_lengths[i])  # 确保宽度至少为 6
-                formatted_row.append(value.rjust(width))  # 使用 rjust 填充宽度
-
+                formatted_value = value.rjust(width)  # 使用 rjust 填充宽度
+                formatted_row.append(formatted_value)
             f.write(''.join(formatted_row) + '\n')
 
 
 if __name__ == "__main__":
     os.chdir("D:\\办公软件\\DP小工具\\2.转dat格式")
-    filename = "jdcdata"
+    filename = "data"
     main()
