@@ -57,6 +57,7 @@ def create_make_steps(df):
     multi_choice_cols = col_counts[col_counts > 1]
 
     # 过滤掉以"R#"开头的列
+
     filtered_multi_choice_cols = multi_choice_cols[~multi_choice_cols.index.str.match(r'^R#')]
 
     if filtered_multi_choice_cols.empty:
