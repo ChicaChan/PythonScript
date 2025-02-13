@@ -1,125 +1,135 @@
-# -*- coding: utf-8 -*-
-import pandas as pd
 import os
+import pandas as pd
 import numpy as np
+import re
+from collections import defaultdict
 
-# 设置工作目录
-os.chdir("D:\\DP小工具\\2.转dat格式")
+# 初始化设置
+pd.set_option('display.max_columns', None)
+os.chdir(r"D:\DP小工具\2.转dat格式")
 
-# 文件名
 filename = "data"
+raw = pd.read_csv(
+    f"./{filename}.csv",
+    dtype=str,
+    keep_default_na=False,
+    encoding='gbk'
+)
 
-# 读取CSV文件
-try:
-    # 首先尝试用UTF-8读取
-    raw = pd.read_csv(f"./{filename}.csv")
-except UnicodeDecodeError:
+
+# ================= 列名处理 =================
+def sanitize_colname(col):
+    """替换所有特殊字符为0"""
+    return re.sub(r'[._]', '0', col)
+
+
+raw.columns = [sanitize_colname(col) for col in raw.columns]
+
+
+# ================= 类型检测 =================
+def detect_column_type(series):
+    cleaned = series.str.strip()
+
+    # 检测整数（允许前导/尾随空格）
+    if cleaned.str.match(r'^[+-]?\d+$').all():
+        return 'integer'
+
+    # 检测数值（含科学计数法和千分位）
     try:
-        # 如果UTF-8失败，尝试用GBK读取
-        raw = pd.read_csv(f"./{filename}.csv", encoding='GBK')
-    except UnicodeDecodeError:
-        # 如果GBK也失败，尝试用GB2312读取
-        raw = pd.read_csv(f"./{filename}.csv", encoding='GB2312')
+        temp = cleaned.str.replace(',', '', regex=False)
+        pd.to_numeric(temp, errors='raise')
+        return 'numeric'
+    except:
+        pass
 
-# 修改数值列处理
-numeric_cols = raw.select_dtypes(include=[np.number]).columns
-# 对数值列进行四舍五入，但保持NA值
-for col in numeric_cols:
-    # 只对非NA值进行四舍五入和整数转换
-    mask = raw[col].notna()
-    raw.loc[mask, col] = raw.loc[mask, col].round().astype(int)
+    return 'character'
 
-# 将列名中的'.'替换为'0'
-raw.columns = raw.columns.str.replace(".", "0")
 
-# 创建属性数据框
 attribute = pd.DataFrame({
     'colname': raw.columns,
-    'type': 0
+    'type': [detect_column_type(raw[col]) for col in raw.columns],
+    'len': [6] * len(raw.columns)
 })
-attribute['colname'] = attribute['colname'].str.replace("_", "0")
 
-# 确定每列的数据类型
+
+# ================= 计算显示宽度 =================
+def get_display_width(s):
+    """考虑中文字符的显示宽度（中文占2个字符位）"""
+    s = str(s)
+    chinese_count = len(re.findall(r'[\u4e00-\u9fff]', s))
+    return len(s) + chinese_count
+
+
 for i, col in enumerate(raw.columns):
-    if raw[col].dtype == 'object':
-        attribute.loc[i, 'type'] = 'character'
-    elif raw[col].dtype in ['float64', 'float32']:
-        attribute.loc[i, 'type'] = 'numeric'
+    max_width = raw[col].apply(get_display_width).max()
+    attribute.at[i, 'len'] = max(6, max_width)
+
+
+# ================= 数据对齐 =================
+def pad_column(series, width, col_type):
+    """根据列类型进行对齐"""
+    series = series.astype(str)
+
+    if col_type in ['integer', 'numeric']:
+        # 数值类型：右对齐，前补空格
+        return series.str.strip().apply(lambda x: x.rjust(width)
+        )
     else:
-        attribute.loc[i, 'type'] = 'integer'
+        # 字符类型：左对齐，后补空格
+        return series.apply(lambda x: x.rjust(width))
 
-# 将NA值替换为多个空格
-raw = raw.fillna(" " * 6)  # 使用6个空格填充NA值
 
-# 计算每列的最大字符长度
-def get_max_bytes_length(series):
-    return max(len(str(x).encode()) for x in series)
-
-len_list = [get_max_bytes_length(raw[col]) for col in raw.columns]
-len_list = [max(x, 6) for x in len_list]
-attribute['len'] = len_list
-
-# 定义填充函数
-def fix_data(series):
-    max_len = get_max_bytes_length(series)
-    max_len = max(max_len, 6)
-    # 对于NA值保持为空格，对于数值进行格式化
-    return series.apply(lambda x: (" " * (max_len - len(str(x).encode()))) + str(x))
-
-# 对每列进行填充
 for col in raw.columns:
-    raw[col] = fix_data(raw[col])
+    col_info = attribute[attribute['colname'] == col].iloc[0]
+    raw[col] = pad_column(raw[col], col_info['len'], col_info['type'])
 
-# 计算define.stp
-s = [1]
-for i in range(1, len(attribute)):
-    s.append(sum(attribute['len'][:i]) + i)
-    
-e = [x + y - 1 for x, y in zip(s, attribute['len'])]
+# ================= 生成define.stp =================
+define_lines = []
+cum_pos = 1
 
-# 生成define语句
-def get_define_str(row):
-    type_map = {
+for _, row in attribute.iterrows():
+    start = cum_pos
+    end = cum_pos + row['len'] - 1
+    prefix = {
         'integer': 'di',
         'numeric': 'dw',
         'character': 'dc'
-    }
-    return f"{type_map[row['type']]} ${row['colname']}=${row['s']}-{row['e']},"
+    }[row['type']]
 
-attribute['s'] = s
-attribute['e'] = e
-attribute['define'] = attribute.apply(get_define_str, axis=1)
+    define_lines.append(
+        f"{prefix} ${row['colname']}=${start}-{end},"
+    )
+    cum_pos = end + 1  # 字段间无间隔
 
-# 生成make.stp
-colname1 = raw.columns
-colname2 = [x.split('_')[0] for x in colname1]
-colname_counts = pd.Series(colname2).value_counts()
-m_colname = colname_counts[colname_counts > 1]
+# ================= 生成make.stp =================
+colname_counts = defaultdict(int)
+base_names = [col.split('_')[0] for col in raw.columns]
+for name in base_names:
+    colname_counts[name] += 1
 
-if len(m_colname) == 0:
-    make = ["No multiple choice,please check your input data."]
-else:
-    make = ["[*data ttl(;)="]
-    make.extend([f"{idx};{val};" for idx, val in m_colname.items()])
-    make.extend([
-        "]",
-        "[*do i=1:[ttl.#]/2]",
-        "   [*do a=1:[ttl.i*2]]",
-        "      om $[ttl.i*2-1]=$[ttl.i*2-1]0[a]/1-999,",
-        "   [*end a]",
-        "[*end i]"
-    ])
+multi_choice = {k: v for k, v in colname_counts.items() if v > 1}
+make_lines = ["[*data ttl(;)=="]
+for name, count in multi_choice.items():
+    make_lines.append(f"{name};{count};")
+make_lines += ["]", "[*do i=1:[ttl.#]/2]",
+               "   [*do a=1:[ttl.i*2]]",
+               "      om $[ttl.i*2-1]=$[ttl.i*2-1]0[a]/1-999,",
+               "   [*end a]", "[*end i]"]
 
-# 输出文件
-with open(f"{filename}.dat", 'w', encoding='utf-8') as f:
+# ================= 输出文件 =================
+# 生成dat文件（固定宽度格式）
+with open(f"{filename}1.dat", 'w', encoding='gbk') as f:
     for _, row in raw.iterrows():
-        f.write(' '.join(str(x) for x in row) + '\n')
+        line = ''.join(row.values)
+        f.write(line + '\n')
 
-with open(f"{filename}define.stp", 'w', encoding='utf-8') as f:
-    f.write('\n'.join(attribute['define']))
+# 生成配置文件
+with open(f"{filename}define.stp", 'w', encoding='gbk') as f:
+    f.write('\n'.join(define_lines))
 
-with open(f"{filename}make.stp", 'w', encoding='utf-8') as f:
-    f.write('\n'.join(make))
+with open(f"{filename}make.stp", 'w', encoding='gbk') as f:
+    content = '\n'.join(make_lines) if multi_choice else "No multiple choice,please check your input data."
+    f.write(content)
 
-# 打印文本型字段
-print(attribute[attribute['type'] == 'character']) 
+print("处理完成！字符型列信息：")
+print(attribute[attribute['type'] == 'character'])
