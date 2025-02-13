@@ -35,21 +35,23 @@ def sanitize_colname(col):
 raw.columns = [sanitize_colname(col) for col in raw.columns]
 
 
-# ================= 类型检测逻辑 =================
+# ================= 增强类型检测逻辑 =================
 def detect_column_type(series):
-    """增强型类型检测"""
+    """严格类型检测"""
     cleaned = series.str.strip()
 
-    # 严格整数检测（允许正负号）
-    if cleaned.str.match(r'^[+-]?\d+$').all():
+    # 检测整数（允许前导正负号）
+    if not cleaned.empty and cleaned.str.match(r'^[+-]?\d+$').all():
         return 'integer'
 
-    # 严格数值检测（含小数点和科学计数法）
+    # 检测数值（含小数和科学计数法）
     try:
         temp = cleaned.str.replace(',', '', regex=False)
-        if temp.str.match(r'^[+-]?\d+\.?\d*([eE][+-]?\d+)?$').all():
-            pd.to_numeric(temp, errors='raise')
-            return 'numeric'
+        pd.to_numeric(temp, errors='raise')
+        # 排除纯整数的数值类型
+        if not temp.str.contains(r'\.|e|E', regex=True).any():
+            return 'integer'
+        return 'numeric'
     except:
         pass
 
@@ -63,27 +65,24 @@ attribute = pd.DataFrame({
     'len': [6] * len(raw.columns)  # 初始化最小长度为6
 })
 
-# ================= 列宽计算（纯字符长度） =================
+# ================= 精确列宽计算 =================
 for i, col in enumerate(raw.columns):
     max_len = raw[col].apply(lambda x: len(str(x).strip())).max()
     attribute.at[i, 'len'] = max(6, max_len)  # 保证最小6位
 
 
 # ================= 数据对齐处理 =================
-def pad_column(series, width, col_type):
+def pad_column(series, width):
     """统一右对齐，空格填充"""
-    series = series.astype(str).str.strip()
-
-    # 所有类型右对齐
-    return series.apply(
-        lambda x: x.rjust(width) if len(x) <= width else x[:width]
+    return series.str.strip().apply(
+        lambda x: x.rjust(width)
     )
 
 
 # 应用对齐处理
 for col in raw.columns:
-    col_info = attribute[attribute['colname'] == col].iloc[0]
-    raw[col] = pad_column(raw[col], col_info['len'], col_info['type'])
+    col_len = attribute[attribute['colname'] == col]['len'].values[0]
+    raw[col] = pad_column(raw[col].astype(str), col_len)
 
 # ================= 生成define.stp =================
 define_lines = []
@@ -98,34 +97,35 @@ for _, row in attribute.iterrows():
         'character': 'dc'
     }
     define_lines.append(
-        f"{prefix_map[row['type']]} ${row['colname']}=${start} - {end}"
+        f"{prefix_map[row['type']]} ${row['colname']}=${start}-{end},"
     )
-    cum_pos = end + 1  # 下一个字段起始位置
+    cum_pos = end + 1 + 1  # 增加字段间分隔空格
 
 # ================= 生成make.stp =================
 colname_counts = defaultdict(int)
-
-base_names = [col.split('_')[0] for col in raw.columns]  # 已处理过列名
+base_names = [col.split('_')[0] for col in raw.columns]
 for name in base_names:
     colname_counts[name] += 1
 
-    multi_choice = {k: v for k, v in colname_counts.items() if v > 1}
-    make_lines = ["[*data ttl(;)=="]
-    make_lines += [f"{name};{count};" for name, count in multi_choice.items()]
-    make_lines += [
-        "]",
-        "[*do i=1:[ttl.#]/2]",
-        "   [*do a=1:[ttl.i*2]]",
-        "      om $[ttl.i*2-1]=$[ttl.i*2-1]0[a]/1-999,",
-        "   [*end a]",
-        "[*end i]"
-    ]
+multi_choice = {k: v for k, v in colname_counts.items() if v > 1}
+make_lines = ["[*data ttl(;)=="]
+make_lines += [f"{name};{count};" for name, count in multi_choice.items()]
+make_lines += [
+    "]",
+    "[*do i=1:[ttl.#]/2]",
+    "   [*do a=1:[ttl.i*2]]",
+    "      om $[ttl.i*2-1]=$[ttl.i*2-1]0[a]/1-999,",
+    "   [*end a]",
+    "[*end i]"
+]
 
 # ================= 文件输出 =================
-# 输出dat文件（固定宽度，右对齐）
+# 输出dat文件（固定宽度，右对齐，字段间空格分隔）
 with open(f"{filename}1.dat", 'w', encoding='gbk') as f:
     for _, row in raw.iterrows():
-        f.write(''.join(row.values) + '\n')
+        # 添加字段间分隔空格
+        formatted_line = ' '.join(row.values) + '\n'
+        f.write(formatted_line)
 
 # 输出配置文件
 with open(f"{filename}define.stp", 'w', encoding='gbk') as f:
