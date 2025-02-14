@@ -5,7 +5,7 @@ import sys
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer,encoding='gbk')
 
-client = OpenAI(api_key="sk-671f95339e314ff2bf358f6e6036dbff", base_url="https://api.deepseek.com")
+client = OpenAI(api_key="sk-ffb2c9b25b984cdd895442e3018ab43d", base_url="https://api.deepseek.com")
 
 response = client.chat.completions.create(
     model="deepseek-reasoner",

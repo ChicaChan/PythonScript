@@ -1,174 +1,156 @@
-# -*- coding: utf-8 -*-
 import os
 import pandas as pd
+import re
+from collections import defaultdict
+
+# 初始化设置
+pd.set_option('display.max_columns', None)
+os.chdir(r"D:\DP小工具\2.转dat格式")
+
+filename = "data"
+
+# ================= 读取CSV文件 =================
+try:
+    raw = pd.read_csv(
+        f"./{filename}.csv",
+        dtype=str,
+        keep_default_na=False,
+        encoding='gbk'
+    )
+except UnicodeDecodeError:
+    raw = pd.read_csv(
+        f"./{filename}.csv",
+        dtype=str,
+        keep_default_na=False,
+        encoding='gb18030'
+    )
 
 
-def read_and_round_csv(file_path):
-    df = pd.read_csv(file_path, encoding='gbk')
-    return df
+# ================= 列名处理 =================
+def sanitize_colname(col):
+    return re.sub(r'[._]+', '0', col)
 
 
-def replace_column_dots(df):
-    df.columns = df.columns.str.replace(".", "0")
-    return df
+raw.columns = [sanitize_colname(col) for col in raw.columns]
 
 
-def determine_column_types(df):
-    attribute = pd.DataFrame({'colname': df.columns, 'type': 'character'})
-    numeric_columns = df.select_dtypes(include=['int64']).columns
-    attribute.loc[attribute['colname'].isin(numeric_columns), 'type'] = 'integer'
+# ================= 判断字段类型 =================
+def detect_column_type(series):
+    cleaned = series.str.strip()
 
-    # 检查浮点数列并标记为numeric
-    float_columns = df.select_dtypes(include=['float64']).columns
-    attribute.loc[attribute['colname'].isin(float_columns), 'type'] = 'numeric'
+    # 空值处理
+    if cleaned.empty:
+        return 'character'
 
-    return attribute
+    # 整数检测
+    if cleaned.str.match(r'^[+-]?\d+$').all():
+        return 'integer'
 
+    # 数值检测（含科学计数法）
+    try:
+        temp = cleaned.str.replace(',', '', regex=False)
+        pd.to_numeric(temp, errors='raise')
+        # 排除纯整数
+        if temp.str.contains(r'\.|e|E', regex=True).any():
+            return 'numeric'
+        return 'integer'
+    except:
+        pass
 
-def create_fixed_width_data(df):
-    # 创建一个临时DataFrame，去掉末尾的等号
-    temp_df = df.apply(lambda x: x.str.rstrip('=') if x.dtype == 'object' else x)
-
-    # 使用字符串表示的所有字段来计算最大长度
-    max_lengths = temp_df.astype(str).apply(lambda x: x.str.len()).max()
-    max_lengths = max_lengths.clip(lower=6)  # 确保最小长度为6
-
-    return df, max_lengths  # 返回原始DataFrame和最大长度
-
-
-def create_define_steps(df, max_lengths, attribute):
-    starts = [sum(max_lengths.iloc[:i]) + 1 + i for i in range(len(df.columns))]
-    ends = [starts[i] + max_lengths.iloc[i] - 1 for i in range(len(df.columns))]
-
-    define_steps = []
-    for col, start, end, col_type in zip(df.columns, starts, ends, attribute['type']):
-        if col_type == 'character':
-            define_steps.append(f"dc ${col}=${start}-{end},")
-        elif col_type == 'integer':
-            define_steps.append(f"di ${col}=${start}-{end},")
-        elif col_type == 'numeric':
-            define_steps.append(f"di ${col}=${start}-{end},")
-    return define_steps
+    return 'character'
 
 
-def create_make_steps(df):
-    col_prefixes = df.columns.str.split("_").str[0]
-    col_counts = col_prefixes.value_counts()
-    multi_choice_cols = col_counts[col_counts > 1]
+# 属性表
+attribute = pd.DataFrame({
+    'colname': raw.columns,
+    'type': [detect_column_type(raw[col]) for col in raw.columns],
+    'len': [6] * len(raw.columns)  # 初始化最小长度
+})
 
-    # 过滤掉以"R#"开头的列
-
-    filtered_multi_choice_cols = multi_choice_cols[~multi_choice_cols.index.str.match(r'^R#')]
-
-    if filtered_multi_choice_cols.empty:
-        return "No multiple choice, please check your input data."
-
-    make_steps = [
-        "[*data ttl(;)= ",
-        *[f"{col};{count};" for col, count in filtered_multi_choice_cols.items()],
-        "]",
-        "[*do i=1:[ttl.#]/2]",
-        "   [*do a=1:[ttl.i*2]]",
-        "      om $[ttl.i*2-1]=$[ttl.i*2-1]0[a]/1-999,",
-        "   [*end a]",
-        "[*end i]"
-    ]
-    return make_steps
+# ================= 列宽计算 =================
+for i, col in enumerate(raw.columns):
+    max_len = raw[col].apply(lambda x: len(str(x).strip())).max()
+    attribute.at[i, 'len'] = max(6, max_len)
 
 
-def print_dc_fields(define_file_path):
-    with open(define_file_path, 'r') as f:
-        lines = f.readlines()
-
-    dc_fields = [line.strip() for line in lines if line.startswith('dc')]
-    for field in dc_fields:
-        print(field)
+# ================= 数据对齐 =================
+def pad_column(series, width):
+    return series.str.strip().apply(
+        lambda x: x.rjust(width)
+    )
 
 
-def main():
-    filename = "data"
-    df = read_and_round_csv(f"./{filename}.csv")
+for col in raw.columns:
+    col_len = attribute[attribute['colname'] == col]['len'].values[0]
+    raw[col] = pad_column(raw[col].astype(str), col_len)
 
-    # 获取以"R#"开头的列名
-    r_columns = df.columns[df.columns.str.startswith('R#')]
-    df = df.drop(columns=r_columns)
+# ================= 生成define.stp =================
+define_lines = []
+cum_pos = 1  # 当前字段起始位置
 
-    df = replace_column_dots(df)
-    attribute = determine_column_types(df)
+for _, row in attribute.iterrows():
+    start = cum_pos
+    end = cum_pos + row['len'] - 1
+    # 类型映射
+    prefix = {
+        'integer': 'di',
+        'numeric': 'dw',
+        'character': 'dc'
+    }[row['type']]
+    define_lines.append(
+        f"{prefix} ${row['colname']}=${start}-{end},"
+    )
+    cum_pos = end + 2  # 字段宽度 + 1个空格分隔符
 
-    df, max_lengths = create_fixed_width_data(df)
-    define_steps = create_define_steps(df, max_lengths, attribute)
-    make_steps = create_make_steps(df)
+# ================= 生成make.stp =================
+# 多选题识别逻辑修正
+pattern = re.compile(r'^([A-Za-z]+\d+)(\d{1,2})$')  # 匹配基名 + 1-2位编号
+base_counts = defaultdict(int)
 
-    define_steps = [step.replace('_', '0') for step in define_steps]
+for col in raw.columns:
+    # 排除字符型字段
+    col_type = attribute[attribute['colname'] == col]['type'].values[0]
+    if col_type == 'character':
+        continue
 
-    define_file_path = f"{filename}define.stp"
-    with open(define_file_path, 'w') as f:
-        for step in define_steps:
-            f.write(step + '\n')
+    match = pattern.match(col)
+    if match:
+        base_name = match.group(1)  # 提取基名部分
+        base_counts[base_name] += 1
 
-    with open(f"{filename}make.stp", 'w') as f:
-        for step in make_steps:
-            f.write(step + '\n')
+# 过滤有效多选字段（出现次数>1）
+multi_choice = {k: v for k, v in base_counts.items() if v > 1}
 
-    # 将空值替换为 NaN
-    df = df.where(pd.notnull(df), None)
+# 构建make.stp内容
+make_lines = ["[*data ttl(;)=="]
+for name, count in multi_choice.items():
+    make_lines.append(f"{name};{count};")
+make_lines += [
+    "]",
+    "[*do i=1:[ttl.#]/2]",
+    "   [*do a=1:[ttl.i*2]]",
+    "      om $[ttl.i*2-1]=$[ttl.i*2-1]0[a]/1-999,",
+    "   [*end a]",
+    "[*end i]"
+]
 
-    # 输出为 .dat 文件，确保每列之间有空格分隔
-    with open(f"{filename}1.dat", 'w') as f:
-        for index, row in df.iterrows():
-            # 处理缺失值，保持为空字符串
-            row_data = [value if value is not None else '' for value in row]
+# ================= 文件输出 =================
+# 输出dat文件
+with open(f"{filename}1.dat", 'w', encoding='gbk') as f:
+    for _, row in raw.iterrows():
+        line = ' '.join(row.values)  # 字段间添加空格
+        f.write(line + '\n')
 
-            # 确保每列的宽度至少为 6
-            formatted_row = []
-            for i, value in enumerate(row_data):
-                width = max(6, max_lengths[i])  # 确保宽度至少为 6
-                formatted_row.append(str(value).rjust(width))  # 使用 rjust 填充宽度
+# 输出配置文件
+with open(f"{filename}1define.stp", 'w', encoding='gbk') as f:
+    f.write('\n'.join(define_lines))
 
-            f.write(''.join(formatted_row) + '\n')  # 使用空字符串连接每列
+with open(f"{filename}1make.stp", 'w', encoding='gbk') as f:
+    if multi_choice:
+        f.write('\n'.join(make_lines))
+    else:
+        f.write("No multiple choice fields detected")
 
-    post_process_dat_file(f"{filename}1.dat", max_lengths)
-
-    # 打印出所有以dc开头的字段
-    print_dc_fields(define_file_path)
-
-
-def post_process_dat_file(file_path, max_lengths):
-    # 读取文件内容
-    with open(file_path, 'r') as f:
-        lines = f.readlines()
-
-    # 处理每一行
-    with open(file_path, 'w') as f:
-        for line in lines:
-            # 去除 'nan' 字符串
-            line = line.replace('nan', '')
-            # 将一位小数转换为整数
-            new_line = []
-            for x in line.split():
-                try:
-                    # 尝试将字符串转换为浮点数
-                    num = float(x)
-                    # 检查是否为一位小数
-                    if num.is_integer():
-                        new_line.append(str(int(num)))  # 转换为整数
-                    else:
-                        new_line.append(x)
-                except ValueError:
-                    new_line.append(x)  # 如果无法转换，保持原值
-
-            # 确保每列的宽度至少为 6
-            formatted_row = []
-            for i, value in enumerate(new_line):
-                # 使用 max_lengths 来确定每列的宽度
-                width = max(6, max_lengths[i])  # 确保宽度至少为 6
-                formatted_value = str(value).rjust(width)  # 使用 rjust 填充宽度
-                formatted_row.append(formatted_value)
-            f.write(''.join(formatted_row) + '\n')
-
-
-if __name__ == "__main__":
-    os.chdir("D:\\办公软件\\DP小工具\\2.转dat格式")
-    filename = "data"
-    main()
+print("处理完成！字符型列信息：")
+print(attribute['type'].value_counts())
+print(attribute[attribute['type'] == 'character'])

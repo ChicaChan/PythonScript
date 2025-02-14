@@ -103,14 +103,19 @@ for _, row in attribute.iterrows():
     cum_pos = end + 2  # 字段宽度 + 1个空格分隔符
 
 # ================= 生成make.stp =================
-# 多选题识别逻辑
-pattern = re.compile(r'^(.*?)(0\d+)+$')
+# 多选题识别逻辑修正
+pattern = re.compile(r'^(.*)0(\d{2})$')  # 调整正则表达式匹配末尾两位数字
 base_counts = defaultdict(int)
 
 for col in raw.columns:
+    # 排除字符型字段
+    col_type = attribute[attribute['colname'] == col]['type'].values[0]
+    if col_type == 'character':
+        continue
+
     match = pattern.match(col)
     if match:
-        base_name = match.group(1)
+        base_name = match.group(1)  # 直接提取基名
         base_counts[base_name] += 1
 
 # 过滤有效多选字段（出现次数>1）
