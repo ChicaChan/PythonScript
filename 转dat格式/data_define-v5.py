@@ -3,68 +3,46 @@ import pandas as pd
 import re
 from collections import defaultdict
 
-# 初始化设置
+# ================= 初始化设置 =================
 pd.set_option('display.max_columns', None)
 os.chdir(r"D:\DP小工具\2.转dat格式")
-
 filename = "data"
 
-# ================= 读取CSV文件 =================
+# ================= 读取原始数据 =================
 try:
-    raw = pd.read_csv(
-        f"./{filename}.csv",
-        dtype=str,
-        keep_default_na=False,
-        encoding='gbk'
-    )
+    raw = pd.read_csv(f"./{filename}.csv", dtype=str, keep_default_na=False, encoding='gbk')
 except UnicodeDecodeError:
-    raw = pd.read_csv(
-        f"./{filename}.csv",
-        dtype=str,
-        keep_default_na=False,
-        encoding='gb18030'
-    )
+    raw = pd.read_csv(f"./{filename}.csv", dtype=str, keep_default_na=False, encoding='gb18030')
 
 
-# ================= 列名处理 =================
-def sanitize_colname(col):
-    return re.sub(r'[._]+', '0', col)
+# ================= 列名预处理 =================
+def process_colname(col):
+    """处理列名中的特殊字符"""
+    return re.sub(r'[._]', '0', col)
 
 
-raw.columns = [sanitize_colname(col) for col in raw.columns]
+original_columns = raw.columns.tolist()
+raw.columns = [process_colname(col) for col in original_columns]
 
 
-# ================= 判断字段类型 =================
+# ================= 字段类型检测 =================
 def detect_column_type(series):
     cleaned = series.str.strip()
-
-    # 空值处理
-    if cleaned.empty:
-        return 'character'
-
-    # 整数检测
-    if cleaned.str.match(r'^[+-]?\d+$').all():
-        return 'integer'
-
-    # 数值检测（含科学计数法）
+    if cleaned.empty: return 'character'
+    if cleaned.str.match(r'^[+-]?\d+$').all(): return 'integer'
     try:
         temp = cleaned.str.replace(',', '', regex=False)
         pd.to_numeric(temp, errors='raise')
-        # 排除纯整数
-        if temp.str.contains(r'\.|e|E', regex=True).any():
-            return 'numeric'
-        return 'integer'
+        return 'numeric' if temp.str.contains(r'\.|e|E').any() else 'integer'
     except:
-        pass
-
-    return 'character'
+        return 'character'
 
 
-# 属性表
 attribute = pd.DataFrame({
-    'colname': raw.columns,
+    'original_col': original_columns,
+    'processed_col': raw.columns,
     'type': [detect_column_type(raw[col]) for col in raw.columns],
-    'len': [6] * len(raw.columns)  # 初始化最小长度
+    'len': [6] * len(raw.columns)
 })
 
 # ================= 列宽计算 =================
@@ -75,56 +53,53 @@ for i, col in enumerate(raw.columns):
 
 # ================= 数据对齐 =================
 def pad_column(series, width):
-    return series.str.strip().apply(
-        lambda x: x.rjust(width)
-    )
+    return series.str.strip().apply(lambda x: x.rjust(width))
 
 
 for col in raw.columns:
-    col_len = attribute[attribute['colname'] == col]['len'].values[0]
+    col_len = attribute[attribute['processed_col'] == col]['len'].values[0]
     raw[col] = pad_column(raw[col].astype(str), col_len)
 
 # ================= 生成define.stp =================
 define_lines = []
-cum_pos = 1  # 当前字段起始位置
-
+cum_pos = 1
 for _, row in attribute.iterrows():
     start = cum_pos
     end = cum_pos + row['len'] - 1
-    # 类型映射
-    prefix = {
-        'integer': 'di',
-        'numeric': 'dw',
-        'character': 'dc'
-    }[row['type']]
-    define_lines.append(
-        f"{prefix} ${row['colname']}=${start}-{end},"
-    )
-    cum_pos = end + 2  # 字段宽度 + 1个空格分隔符
+    prefix = {'integer': 'di', 'numeric': 'dw', 'character': 'dc'}[row['type']]
+    define_lines.append(f"{prefix} ${row['processed_col']}=${start}-{end},")
+    cum_pos = end + 2
 
-# ================= 生成make.stp =================
-# 多选题识别逻辑修正
-pattern = re.compile(r'^(.*)0(\d{2})$')  # 调整正则表达式匹配末尾两位数字
-base_counts = defaultdict(int)
+# ================= 全新make生成逻辑 =================
+multi_choice = defaultdict(int)
 
-for col in raw.columns:
-    # 排除字符型字段
-    col_type = attribute[attribute['colname'] == col]['type'].values[0]
-    if col_type == 'character':
+for orig_col in original_columns:
+    # 跳过字符型字段
+    if attribute[attribute['original_col'] == orig_col]['type'].values[0] == 'character':
         continue
 
-    match = pattern.match(col)
-    if match:
-        base_name = match.group(1)  # 直接提取基名
-        base_counts[base_name] += 1
+    # 拆分基题和子题编号
+    if '_' in orig_col:
+        parts = orig_col.rsplit('_', 1)  # 从右边第一个下划线分割
+        base_part, num_part = parts[0], parts[1]
+    else:
+        continue  # 仅处理带下划线的字段
 
-# 过滤有效多选字段（出现次数>1）
-multi_choice = {k: v for k, v in base_counts.items() if v > 1}
+    # 清洗基题名
+    clean_base = re.sub(r'[._]', '0', base_part)
 
-# 构建make.stp内容
+    # 提取子题编号（自动补零到两位）
+    try:
+        sub_num = int(num_part)
+        sub_num = max(1, min(sub_num, 99))  # 限制1-99
+        multi_choice[clean_base] = max(multi_choice[clean_base], sub_num)
+    except ValueError:
+        continue
+
+# 构建make内容
 make_lines = ["[*data ttl(;)=="]
-for name, count in multi_choice.items():
-    make_lines.append(f"{name};{count};")
+for base in sorted(multi_choice.keys()):
+    make_lines.append(f"{base};{multi_choice[base]};")
 make_lines += [
     "]",
     "[*do i=1:[ttl.#]/2]",
@@ -135,13 +110,10 @@ make_lines += [
 ]
 
 # ================= 文件输出 =================
-# 输出dat文件
 with open(f"{filename}1.dat", 'w', encoding='gbk') as f:
     for _, row in raw.iterrows():
-        line = ' '.join(row.values)  # 字段间添加空格
-        f.write(line + '\n')
+        f.write(' '.join(row.values) + '\n')
 
-# 输出配置文件
 with open(f"{filename}1define.stp", 'w', encoding='gbk') as f:
     f.write('\n'.join(define_lines))
 
@@ -151,6 +123,8 @@ with open(f"{filename}1make.stp", 'w', encoding='gbk') as f:
     else:
         f.write("No multiple choice fields detected")
 
-print("处理完成！字符型列信息：")
+print("处理完成！")
+print("识别到的多选题基题：")
+print("\n".join([f"{k}: {v}个子题" for k, v in multi_choice.items()]))
 print(attribute['type'].value_counts())
 print(attribute[attribute['type'] == 'character'])
