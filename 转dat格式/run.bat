@@ -3,7 +3,7 @@ setlocal enabledelayedexpansion
 
 :: 脚本信息
 echo.
-echo ============ 批量数据转换工具 v3.0 ============
+echo ============ data_define脚本 ============
 echo.
 
 :: 检查参数
@@ -61,15 +61,15 @@ for %%F in (%*) do (
     :: 执行转换
     python "%~dp0data_define.py" "!input_file!" "!out_dir!"
     if !errorlevel! equ 0 (
-        echo 转换成功 ^(代码!errorlevel!^)
+        echo 转换成功 ^(return!errorlevel!^)
     ) else (
-        echo 转换失败 ^(代码!errorlevel!^)
+        echo 转换失败 ^(return!errorlevel!^)
     )
 )
 
 :: 完成提示
 echo.
-echo 所有文件处理完成
+echo 处理完成
 echo 输出目录：%OUT_ROOT%
 echo.
 pause

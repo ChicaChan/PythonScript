@@ -8,7 +8,7 @@ pd.set_option('display.max_columns', None)
 os.chdir(r"D:\DP小工具\2.转dat格式")
 filename = "data"
 
-# ================= 读取原始数据 =================
+# ================= 读取数据 =================
 try:
     raw = pd.read_csv(f"./{filename}.csv", dtype=str, keep_default_na=False, encoding='gbk')
 except UnicodeDecodeError:
@@ -87,7 +87,6 @@ for orig_col in original_columns:
 
     clean_base = re.sub(r'[._]', '0', base_part)
 
-    # 提取子题编号（自动补零到两位）
     try:
         sub_num = int(num_part)
         sub_num = max(1, min(sub_num, 99))  # 限制1-99
@@ -95,7 +94,7 @@ for orig_col in original_columns:
     except ValueError:
         continue
 
-# 构建make内容
+# 生成make.stp
 make_lines = ["[*data ttl(;)=="]
 for base in sorted(multi_choice.keys()):
     make_lines.append(f"{base};{multi_choice[base]};")
@@ -108,7 +107,7 @@ make_lines += [
     "[*end i]"
 ]
 
-# ================= 文件输出 =================
+# ================= 保存文件 =================
 with open(f"{filename}1.dat", 'w', encoding='gbk') as f:
     for _, row in raw.iterrows():
         f.write(' '.join(row.values) + '\n')
@@ -122,7 +121,5 @@ with open(f"make.stp", 'w', encoding='gbk') as f:
     else:
         f.write("No multiple choice fields detected")
 
-# print("识别到的多选题基题：")
-# print("\n".join([f"{k}: {v}个子题" for k, v in multi_choice.items()]))
 print(attribute['type'].value_counts())
 print(attribute[attribute['type'] == 'character'])

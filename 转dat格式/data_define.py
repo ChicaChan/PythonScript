@@ -176,7 +176,7 @@ class DataProcessor:
         """文件保存"""
         base_name = os.path.splitext(os.path.basename(self.file_path))[0]
         os.makedirs(self.output_dir, exist_ok=True)
-        # 保存数据文件
+        # 保存dat文件
         dat_path = os.path.join(self.output_dir, f"{base_name}.dat")
         with open(dat_path, 'w', encoding='gbk') as f:
             for _, row in self.raw_df.iterrows():
