@@ -5,7 +5,7 @@ from collections import defaultdict
 from typing import List, Dict, Tuple
 import sys
 
-# ================= 常量定义 =================
+#  常量定义 
 ENCODINGS = ('gbk', 'gb18030', 'utf-8')
 COLUMN_CLEAN_PATTERN = re.compile(r'[._]')
 DEFAULT_LEN = 6
@@ -17,7 +17,7 @@ COLUMN_TYPES = {
 PD_VERSION = pd.__version__.split('.')[0]
 
 
-# ================= 工具函数 =================
+#  工具函数 
 def detect_encoding(file_path: str) -> str:
     """检测文件编码"""
     for encoding in ENCODINGS:
@@ -53,7 +53,7 @@ def detect_column_type(series: pd.Series) -> str:
         return 'character'
 
 
-# ================= 主处理类 =================
+#  主处理类 
 class DataProcessor:
     def __init__(self, file_path: str, output_dir: str):
         self.file_path = file_path
@@ -207,7 +207,6 @@ class DataProcessor:
         print(self.attribute_df[self.attribute_df['type'] == 'character'])
 
 
-# =================main=================
 if __name__ == "__main__":
     if len(sys.argv) < 3:
         print("Usage: python data_define.py <input_csv> <output_dir>")
@@ -218,4 +217,3 @@ if __name__ == "__main__":
 
     processor = DataProcessor(input_file, output_dir)
     processor.run()
-

@@ -1,93 +1,102 @@
 import pandas as pd
 import numpy as np
-from ipfn import ipfn  # 用于实现rim weighting
-import warnings
-warnings.filterwarnings('ignore')
+from ipfn import ipfn
+
+
+def convert_condition(condition):
+    """处理R风格的条件表达式"""
+    return (
+        condition.replace("data$", "")
+        .replace("&", " and ")
+        .replace("|", " or ")
+        .replace("==", " == ")
+        .replace("!=", " != ")
+        .strip()
+    )
+
 
 # 读取数据
-def rim_weight():
-    # 读取输入文件
-    all_data = pd.read_excel("input.xlsx", sheet_name=0)
-    all_quota = pd.read_excel("input.xlsx", sheet_name=1)
-    
-    # 分离目标样本量和配额条件
-    use_sample_cons = all_quota[all_quota['group'] == '99']
-    quota = all_quota[all_quota['group'] != '99']
-    
-    # 筛选加权样本
-    data = all_data
-    if use_sample_cons['condition'].iloc[0] != 't':
-        # 使用eval安全地执行条件筛选
-        condition = use_sample_cons['condition'].iloc[0]
-        data = data.query(condition)
-    
-    # 按照组别重新生成加权数据
-    unique_groups = quota['group'].unique()
-    ng = len(unique_groups)
-    
-    # 创建转换矩阵
-    trans = pd.DataFrame()
-    trans[data.columns[0]] = data[data.columns[0]]
-    
-    # 为每个组创建target列
-    for i in range(ng):
-        trans[f'target{i+1}'] = None
-    
-    # 组内排序
-    group_counts = quota['group'].value_counts().sort_index()
-    group_sep = []
-    for count in group_counts:
-        group_sep.extend(range(1, count + 1))
-    quota['group_sep'] = group_sep
-    
-    # 填充条件数据
-    for _, row in quota.iterrows():
-        mask = data.eval(row['condition'])
-        trans.loc[mask, f'target{row["group"]}'] = row['group_sep']
-    
-    # 转换为因子(分类变量)
-    for col in trans.columns[1:]:
-        trans[col] = trans[col].astype('category')
-        if trans[col].isna().any():
-            print(f"第{col[6:]}组存在不满足条件的数据")
-    
-    # 准备目标比例
-    targets_dict = {}
-    for group in unique_groups:
-        group_data = quota[quota['group'] == group]
-        targets = group_data['target'].values / 100
-        targets_dict[f'target{group}'] = dict(zip(range(1, len(targets) + 1), targets))
-    
-    # 执行加权
-    dimensions = []
-    target_margins = []
-    
-    for i in range(ng):
-        col = f'target{i+1}'
-        dimensions.append(trans[col].values)
-        target_margins.append(list(targets_dict[col].values()))
-    
-    # 初始化权重
-    weights = np.ones(len(data))
-    
-    # 使用ipfn进行迭代计算
-    IPF = ipfn.ipfn(dimensions, target_margins, weights, max_iteration=1000)
-    weights = IPF.iteration()
-    
-    # 调整权重使其符合目标样本量
-    target_sample = use_sample_cons['target'].iloc[0]
-    weights = weights * (target_sample / len(all_data))
-    
-    # 输出结果
-    output_sample = data.copy()
-    output_sample['wt'] = weights
-    
-    # 保存结果
-    output_sample.to_csv("output.csv", index=False)
-    
-    # 计算加权效果指标
-    weighting_effect = np.sum(weights)**2 / np.sum(weights**2)
-    print(f"加权效果指标(越接近未加权样本量越好): {weighting_effect}")
+all_data = pd.read_excel("input.xlsx", sheet_name=0)
+all_quota = pd.read_excel("input.xlsx", sheet_name=1)
 
-if __name__ == "__main__":
-    rim_weight()
+# 处理样本条件
+use_sample_cons = all_quota[all_quota['group'] == 99].iloc[0]
+quota = all_quota[all_quota['group'] != 99].copy()
+
+# 生成分组序号
+quota['group_sep'] = quota.groupby('group').cumcount() + 1
+
+# 筛选数据
+if use_sample_cons['condition'].lower().strip() == 't':
+    data = all_data.copy()
+else:
+    condition = convert_condition(use_sample_cons['condition'])
+    data = all_data.query(condition).copy()
+
+# 准备转换矩阵（修复初始化问题）
+categories = [str(i) for i in range(1, 7)] + ['missing']
+trans = pd.DataFrame({
+    'userID': data['userID'].astype(str),
+    'target1': pd.Categorical(np.full(len(data), 'missing'), categories=categories)
+})
+
+# 填充目标列（确保覆盖所有样本）
+for _, row in quota.iterrows():
+    condition = convert_condition(row['condition'])
+    mask = data.eval(condition)
+    trans.loc[mask, 'target1'] = str(row['group_sep'])
+
+# 处理未覆盖样本（关键修复）
+print(f"未覆盖样本数: {len(trans[trans['target1'] == 'missing'])}")
+trans = trans[trans['target1'] != 'missing'].reset_index(drop=True)
+
+# 构造约束条件（完全匹配分类）
+group_data = quota[quota['group'] == 1]
+total_target = group_data['target'].sum()
+
+constraint_dict = {
+    str(i): group_data[group_data['group_sep'] == i]['target'].values[0] / total_target
+    for i in range(1, 7)
+}
+constraint_series = pd.Series(
+    data=[constraint_dict.get(cat, 0) for cat in categories if cat != 'missing'],
+    index=pd.CategoricalIndex([str(i) for i in range(1, 7)], name='target1')
+)
+
+# 验证约束条件
+print("\n约束条件验证:")
+print(constraint_series)
+print(f"总比例: {constraint_series.sum():.2%}")
+
+# IPFN配置（最终正确参数）
+trans['weight'] = 1.0
+
+ipf = ipfn.ipfn(
+    trans,
+    aggregates=[constraint_series.values],
+    dimensions=[[['target1']]],
+    weight_col='weight',
+    max_iteration=5000,
+    verbose=2
+)
+
+# 执行迭代
+try:
+    result = ipf.iteration()
+    print("\n加权成功！")
+
+    # 计算最终权重
+    wt = result['weight'] * (use_sample_cons['target'] / len(all_data))
+    data = data.iloc[trans.index].copy()  # 保持索引一致
+    data['weight'] = wt.values
+    data.to_csv("output.csv", index=False)
+
+    # 计算有效样本量
+    n_eff = (data['weight'].sum() ** 2) / (data['weight'] ** 2).sum()
+    print(f"有效样本量: {n_eff:.1f}")
+
+except Exception as e:
+    print(f"错误信息: {str(e)}")
+    print("最终验证:")
+    print("转换矩阵分类:", trans['target1'].unique())
+    print("约束条件索引:", constraint_series.index.tolist())
