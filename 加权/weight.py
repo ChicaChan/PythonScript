@@ -1,189 +1,240 @@
 import pandas as pd
 import numpy as np
+import re
 from scipy.optimize import minimize
+from numba import njit
+import warnings
+
+warnings.filterwarnings('ignore', category=RuntimeWarning)
 
 
-def convert_condition(condition_str):
-    """改进的条件转换函数"""
-    return (
-        condition_str.replace("data$", "")
-        .replace("&", " and ").replace("|", " or ")
-        .replace("==", " == ").replace("!=", " != ")
-        .strip()
-    )
+def convert_condition(condition):
+    """自动转换R风格条件到Python格式"""
+    # 替换R语法元素（优化顺序）
+    replacements = [
+        (r"data\$(\w+)", r"\1"),  # 移除data$前缀，不添加反引号
+        (r"\b==\b", " == "),  # 确保运算符空格
+        (r"\b!=\b", " != "),
+        (r"\b&\b", " and "),
+        (r"\b\|\b", " or "),
+        (r"%in%", ".isin"),
+        (r"\bNA\b", "NaN")
+    ]
+
+    original_cond = condition.strip()
+
+    # 执行替换
+    for pattern, repl in replacements:
+        condition = re.sub(pattern, repl, condition)
+
+    # 转换字符串引号（单引号转双引号）
+    condition = re.sub(r"'(\w+)'", r'"\1"', condition)
+
+    # 添加安全括号
+    if not condition.startswith("("):
+        condition = f"({condition})"
+
+    return condition, original_cond
 
 
-def detect_primary_key(data_df):
-    """安全的主键检测（保持原始数据类型）"""
-    for col in data_df.columns:
-        if data_df[col].nunique() == len(data_df):
-            print(f"检测到主键列: {col} (类型: {data_df[col].dtype})")
-            return col
-    return data_df.columns[0]
+def validate_data_structure(data_df, quota_df):
+    """增强数据校验"""
+    # 检查配额表结构
+    if not {'group', 'condition', 'target'}.issubset(quota_df.columns):
+        raise ValueError("配额表必须包含group/condition/target三列")
 
 
-def build_dynamic_constraints(quota_df):
-    """约束条件生成（保持R逻辑）"""
+def build_joint_constraints(quota_df):
+    """修正约束构建逻辑"""
     constraints = {}
-    for group in quota_df['group'].unique():
-        group_data = quota_df[quota_df['group'] == group]
-        total_target = group_data['target'].sum()
-        group_constraint = {}
-        for _, row in group_data.iterrows():
-            subgroup = row['group_sep']
-            ratio = row['target'] / total_target
-            group_constraint[subgroup] = ratio
-        col_name = f'target_{group}'
-        constraints[col_name] = group_constraint
+    total_per_group = quota_df.groupby('group')['target'].sum()
+
+    for _, row in quota_df.iterrows():
+        group = int(row['group'])
+        subgroup = int(row.name)  # 使用行索引作为subgroup
+
+        # 计算组内比例（重要修正点）
+        group_total = total_per_group[group]
+        ratio = row['target'] / group_total
+
+        constraints[(group, subgroup)] = ratio
+
+    print("\n联合约束配置（组内比例）:")
+    for (g, s), r in sorted(constraints.items()):
+        print(f"Group {g}-{s}: {r:.4%}")
     return constraints
 
 
-def calculate_weights(constraints, trans_data, initial_cap=1.5):
-    """带权重上限调整的优化计算"""
-    cap = initial_cap
-    max_iterations = 10
-    constraint_cols = list(constraints.keys())
+def create_indicator_matrix(trans_data, constraints):
+    """生成指标矩阵时增加调试信息"""
+    indicator_dict = {}
+    print("\n指标矩阵维度检查:")
 
-    # 准备指标矩阵
-    indicator_matrices = {}
-    target_ratios = {}
-    for col in constraint_cols:
-        subgroups = list(constraints[col].keys())
-        valid_mask = trans_data[col].notna()
-        dummies = pd.get_dummies(trans_data.loc[valid_mask, col].astype(int))[subgroups]
-        indicator_matrices[col] = (valid_mask, dummies)
-        target_ratios[col] = np.array([constraints[col][s] for s in subgroups])
+    for idx, ((group, subgroup)) in enumerate(constraints.keys(), 1):
+        col_name = f'target_{group}'
+        if col_name not in trans_data.columns:
+            raise KeyError(f"转换矩阵缺少列: {col_name}")
+
+        mask = trans_data[col_name] == subgroup
+        print(f"约束 {idx}: Group {group}-{subgroup} => 匹配样本数: {mask.sum()}")
+
+        indicator_dict[(group, subgroup)] = mask.astype(np.float64)
+
+    matrix = np.column_stack(list(indicator_dict.values()))
+    targets = np.array([constraints[k] for k in sorted(constraints.keys())])
+    return matrix, targets
+
+
+@njit
+def fast_matrix_ops(X_T, weights):
+    """数值稳定的矩阵运算"""
+    weighted = X_T.dot(weights)
+    total = np.sum(weights)
+    return weighted / total if total > 1e-10 else np.zeros_like(weighted)
+
+
+def calculate_weights_optimized(constraints, trans_data, max_attempts=15):
+    """增强的优化过程"""
+    X, y = create_indicator_matrix(trans_data, constraints)
+    X_T = X.T.copy()
+    n_samples = X.shape[0]
+
+    # 打印关键参数
+    print(f"\n优化参数详情:")
+    print(f"样本数: {n_samples}")
+    print(f"约束数: {X.shape[1]}")
+    print(f"目标比例: {y}")
 
     def loss(params):
-        """优化目标函数"""
-        total_loss = 0.0
-        for col in constraint_cols:
-            valid_mask, dummies = indicator_matrices[col]
-            valid_weights = params[valid_mask]
-            subgroup_weights = dummies.T.dot(valid_weights)
-            subgroup_total = valid_weights.sum()
-            if subgroup_total == 0:
-                return np.inf
-            actual_ratios = subgroup_weights / subgroup_total
-            target = target_ratios[col]
-            total_loss += np.sum((actual_ratios - target) ** 2)
-        return total_loss
+        actual = fast_matrix_ops(X_T, params)
+        return np.sum((actual - y) ** 2) + 0.001 * np.var(params)
 
-    # 动态调整权重上限
-    for _ in range(max_iterations):
-        bounds = [(0.1, cap)] * len(trans_data)
+    best_weights = None
+    best_loss = np.inf
+
+    for attempt in range(max_attempts):
+        current_cap = 1.5 + 0.5 * attempt
+        bounds = [(0.1, current_cap)] * n_samples
+
+        # 改进的初始化策略
+        if attempt == 0:
+            x0 = np.ones(n_samples)
+        elif attempt % 3 == 0:
+            x0 = np.random.uniform(0.5, 2.0, n_samples)
+        else:
+            x0 = best_weights * np.random.normal(1, 0.1, n_samples)
+            x0 = np.clip(x0, 0.1, current_cap)
+
+        # 使用更鲁棒的优化方法
         result = minimize(
             loss,
-            x0=np.ones(len(trans_data)),
-            method='L-BFGS-B',
+            x0=x0,
+            method='trust-constr',
             bounds=bounds,
-            options={'maxiter': 500, 'ftol': 1e-6}
+            options={'maxiter': 1000, 'xtol': 1e-8, 'gtol': 1e-8}
         )
+
         if result.success:
-            print(f"优化成功 (cap={cap})")
-            return result.x
-        cap += 1
-    raise RuntimeError("无法在最大迭代次数内找到解")
+            current_loss = result.fun
+            print(f"阶段{attempt + 1} [cap={current_cap:.1f}] 损失: {current_loss:.6f}")
+
+            if current_loss < best_loss:
+                best_loss = current_loss
+                best_weights = result.x
+
+            if current_loss < 1e-6:
+                break
+        else:
+            print(f"阶段{attempt + 1} 未收敛: {result.message}")
+
+    if best_weights is None:
+        raise RuntimeError("所有优化尝试均失败，请检查约束条件是否冲突")
+
+    # 标准化权重
+    best_weights /= best_weights.mean()
+    return best_weights
 
 
-# 主程序流程
-try:
-    # 数据读取（保持原始类型）
-    print("正在读取数据...")
-    all_data = pd.read_excel("input.xlsx", sheet_name=0)
-    all_quota = pd.read_excel("input.xlsx", sheet_name=1)
+def main_process():
+    try:
+        # 数据读取
+        print("读取输入文件中...")
+        all_data = pd.read_excel("input.xlsx", sheet_name=0)
+        all_quota = pd.read_excel("input.xlsx", sheet_name=1)
 
-    # 列校验
-    required_quota_cols = {'group', 'target', 'condition'}
-    missing_quota_cols = required_quota_cols - set(all_quota.columns)
-    if missing_quota_cols:
-        raise KeyError(f"配额表缺少必要列: {missing_quota_cols}")
+        # 数据校验
+        validate_data_structure(all_data, all_quota)
 
-    # 动态生成分组序号
-    quota = all_quota[all_quota['group'] != 99].copy()
-    quota['group_sep'] = quota.groupby('group').cumcount() + 1
+        # 处理配额配置
+        quota = all_quota[all_quota['group'] != 99].copy()
+        use_sample_cons = all_quota[all_quota['group'] == 99].iloc[0]
 
-    # 主键检测（不修改数据类型）
-    primary_key = detect_primary_key(all_data)
-    print(f"使用主键列: {primary_key}")
+        # 类型转换
+        quota['group'] = quota['group'].astype(int)
+        quota['target'] = pd.to_numeric(quota['target'], errors='coerce')
+        target_value = float(use_sample_cons['target'])
 
-    # 样本筛选（保持R逻辑）
-    use_sample_cons = all_quota[all_quota['group'] == 99].iloc[0]
-    if use_sample_cons['condition'].lower().strip() == 't':
-        data = all_data.copy()
-    else:
-        condition = convert_condition(use_sample_cons['condition'])
-        data = all_data.query(condition).copy()
-        print(f"应用筛选条件: {condition} | 剩余样本: {len(data)}")
+        # 样本筛选
+        if str(use_sample_cons['condition']).strip().lower() == 't':
+            data = all_data.copy()
+        else:
+            condition = convert_condition(use_sample_cons['condition'])
+            data = all_data.query(condition).copy()
+        print(f"\n有效样本量: {len(data)}")
 
-    # 创建转换矩阵（保留原始数据类型）
-    groups = quota['group'].unique()
-    trans = pd.DataFrame({
-        primary_key: data[primary_key].values  # 关键修改：保持原始类型
-    })
-    for group in groups:
-        trans[f'target_{group}'] = np.nan
+        # 创建转换矩阵
+        trans = data[['SERIAL']].copy()
+        groups = quota['group'].unique()
 
-    # 应用配额条件
-    for _, row in quota.iterrows():
-        group = row['group']
-        col_name = f'target_{group}'
-        condition = convert_condition(row['condition'])
-        try:
-            mask = data.eval(condition)
-            trans.loc[mask, col_name] = row['group_sep']
-        except Exception as e:
-            raise ValueError(f"条件解析失败: {condition} | 错误: {str(e)}")
+        for group in groups:
+            trans[f'target_{group}'] = np.nan
 
-    # 检查缺失值（保持R的警告逻辑）
-    for group in groups:
-        na_count = trans[f'target_{group}'].isna().sum()
-        if na_count > 0:
-            print(f"* 警告: group {group} 中有 {na_count} 个样本未覆盖条件")
+        # 应用配额条件
+        for idx, row in quota.iterrows():
+            group = int(row['group'])
+            condition = convert_condition(row['condition'])
+            try:
+                mask = data.eval(condition)
+                trans.loc[mask, f'target_{group}'] = idx  # 使用行索引作为subgroup标识
+            except Exception as e:
+                raise ValueError(f"行{idx}条件解析失败: {condition}\n错误: {str(e)}")
 
-    # 构建约束
-    cons_dict = build_dynamic_constraints(quota)
-    print("\n约束比例配置:")
-    for col, ratios in cons_dict.items():
-        print(f"{col}: {ratios}")
+        # 构建约束
+        joint_constraints = build_joint_constraints(quota)
 
-    # 计算权重
-    print("\n开始优化计算...")
-    weights = calculate_weights(cons_dict, trans, initial_cap=1.5)
+        # 计算权重
+        print("\n开始权重优化...")
+        weights = calculate_weights_optimized(joint_constraints, trans)
 
-    # 应用权重调整（保持R的后处理逻辑）
-    total_samples = len(all_data)
-    trans['weight'] = weights * (use_sample_cons['target'] / total_samples)
+        # 应用权重
+        total_sample = len(all_data)
+        trans['weight'] = weights * (target_value / total_sample)
 
-    # 合并前统一类型（关键修改）
-    data[primary_key] = data[primary_key].astype(trans[primary_key].dtype)
-    output_data = data.merge(trans[[primary_key, 'weight']], on=primary_key)
+        # 合并结果
+        output_data = all_data.merge(
+            trans[['SERIAL', 'weight']],
+            on='SERIAL',
+            how='left'
+        ).fillna({'weight': 0.0})
 
-    # 结果验证
-    print("\n验证加权结果:")
-    weighted_total = output_data['weight'].sum()
-    for group in groups:
-        group_data = quota[quota['group'] == group]
-        total_target = group_data['target'].sum()
+        # 结果验证
+        print("\n最终权重统计:")
+        print(f"总权重: {output_data['weight'].sum():.2f}")
+        print(f"平均权重: {output_data['weight'].mean():.4f}")
+        print(f"最大权重: {output_data['weight'].max():.4f}")
+        print(f"最小权重: {output_data['weight'].min():.4f}")
 
-        for _, row in group_data.iterrows():
-            subgroup = row['group_sep']
-            mask = trans[f'target_{group}'] == subgroup
-            actual = trans.loc[mask, 'weight'].sum() / weighted_total
-            target = row['target'] / total_target
-            print(f"Group {group}-{subgroup}: 目标={target:.4f} | 实际={actual:.4f}")
+        output_data.to_csv("optimized_output.csv", index=False)
+        print("\n处理成功完成！")
 
-    # 有效样本量计算
-    n_eff = (weighted_total ** 2) / (output_data['weight'] ** 2).sum()
-    print(f"\n有效样本量: {n_eff:.1f}")
+    except Exception as e:
+        print(f"\n错误发生: {str(e)}")
+        print("故障排除建议:")
+        print("1. 检查YUEHUO08和PF列是否存在且类型正确")
+        print("2. 确认所有条件表达式中的拼写正确")
+        print("3. 验证group=99的target值为有效数字")
+        print("4. 检查是否所有约束条件都有匹配样本")
 
-    # 保存结果
-    output_data.to_csv("optimized_output.csv", index=False)
-    print("\n处理完成，结果已保存到 optimized_output.csv")
 
-except Exception as e:
-    print(f"\n运行时错误: {str(e)}")
-    print("排查建议:")
-    print("1. 检查主键列是否包含混合数据类型（如数字和文本）")
-    print("2. 确认所有条件表达式中的列名正确")
-    print("3. 验证输入文件格式是否符合要求")
+if __name__ == "__main__":
+    main_process()
