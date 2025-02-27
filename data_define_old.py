@@ -108,7 +108,7 @@ make_lines += [
 ]
 
 # ================= 保存文件 =================
-with open(f"{filename}1.dat", 'w', encoding='gbk') as f:
+with open(f"{filename}.dat", 'w', encoding='gbk') as f:
     for _, row in raw.iterrows():
         f.write(' '.join(row.values) + '\n')
 
