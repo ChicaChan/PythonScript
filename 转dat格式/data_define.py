@@ -159,7 +159,7 @@ class DataProcessor:
         if not self.multi_choice:
             return ["No multiple choice fields detected"]
 
-        lines = ["[*data ttl(;)=="]
+        lines = ["[*data ttl(;)="]
         for base in sorted(self.multi_choice.keys()):
             lines.append(f"{base};{self.multi_choice[base]};")
         lines += [
