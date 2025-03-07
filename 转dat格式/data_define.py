@@ -2,7 +2,7 @@ import os
 import pandas as pd
 import re
 from collections import defaultdict
-from typing import List, Dict, Tuple
+from typing import List
 import sys
 
 #  常量定义 

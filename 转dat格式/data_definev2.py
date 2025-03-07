@@ -2,7 +2,7 @@ import os
 import pandas as pd
 import re
 from collections import defaultdict
-from typing import List, Dict, Tuple
+from typing import List
 import sys
 
 # 常量定义
@@ -14,11 +14,9 @@ COLUMN_TYPES = {
     'numeric': 'dw',
     'character': 'dc'
 }
-PD_VERSION = pd.__version__.split('.')[0]
-CHINESE_PATTERN = re.compile(r'^[\u4e00-\u9fff，。！？、；：“”‘’（）《》【】]+$')  # 新增中文检测正则
+CHINESE_PATTERN = re.compile(r'^[\u4e00-\u9fff，。！？、；：“”‘’（）《》【】]+$')
 
 
-# 工具函数
 def detect_encoding(file_path: str) -> str:
     """检测文件编码"""
     for encoding in ENCODINGS:
@@ -31,14 +29,12 @@ def detect_encoding(file_path: str) -> str:
     return ENCODINGS[0]
 
 
-def is_all_chinese(series: pd.Series) -> bool:  # 新增中文检测函数
+def is_all_chinese(series: pd.Series) -> bool:
     """检查Series中的所有非空值是否全为中文"""
     if series.empty:
         return False
     cleaned = series.str.strip().replace(r'^\s*$', pd.NA, regex=True).dropna()
-    if cleaned.empty:
-        return False
-    return cleaned.str.contains(CHINESE_PATTERN, na=False).all()
+    return not cleaned.empty and cleaned.str.contains(CHINESE_PATTERN, na=False).all()
 
 
 def detect_column_type(series: pd.Series) -> str:
@@ -46,16 +42,13 @@ def detect_column_type(series: pd.Series) -> str:
     if series.empty:
         return 'integer'
 
-    # 预处理数据
     cleaned = series.str.strip().replace('', pd.NA).dropna()
     if cleaned.empty:
         return 'integer'
 
-    # 整数检测
     if cleaned.str.fullmatch(r'^[+-]?\d+$').all():
         return 'integer'
 
-    # 数值型检测
     temp = cleaned.str.replace(',', '', regex=False)
     try:
         pd.to_numeric(temp, errors='raise')
@@ -64,42 +57,17 @@ def detect_column_type(series: pd.Series) -> str:
         return 'character'
 
 
-# 主处理类
 class DataProcessor:
     def __init__(self, file_path: str, output_dir: str):
         self.file_path = file_path
         self.output_dir = output_dir
         self.raw_df = None
         self.attribute_df = None
-        self.multi_choice = defaultdict(int)
 
         pd.set_option('display.max_columns', None)
         os.chdir(os.path.dirname(file_path))
 
-    def renumber_multi_choice_columns(self) -> None:  # 新增方法
-        """重新编号多选题字段名"""
-        original_columns = self.raw_df.columns.tolist()
-        column_rename_map = {}
-        multi_choice_groups = defaultdict(list)
-
-        for col in original_columns:
-            if '_' in col:
-                parts = col.rsplit('_', 1)
-                if len(parts) == 2 and parts[1].isdigit():
-                    base_part, num_part = parts
-                    multi_choice_groups[base_part].append((col, int(num_part)))
-
-        for base_part, cols in multi_choice_groups.items():
-            sorted_cols = sorted(cols, key=lambda x: x[1])
-            new_number = 1
-            for old_col, _ in sorted_cols:
-                new_col = f"{base_part}_{new_number}"
-                column_rename_map[old_col] = new_col
-                new_number += 1
-
-        self.raw_df.rename(columns=column_rename_map, inplace=True)
-
-    def filter_chinese_columns(self) -> None:  # 新增方法
+    def filter_chinese_columns(self) -> None:
         """删除全中文列"""
         cols_to_drop = [col for col in self.raw_df.columns if is_all_chinese(self.raw_df[col])]
         self.raw_df.drop(columns=cols_to_drop, inplace=True)
@@ -137,6 +105,46 @@ class DataProcessor:
         ).fillna(0).astype(int)
         self.attribute_df['len'] = lengths.clip(lower=DEFAULT_LEN).values
 
+    def generate_define(self) -> List[str]:
+        """生成排序后的define.stp"""
+        lines = []
+        current_pos = 1
+
+        # 分离多选题字段和其他字段
+        multi_records = []
+        normal_records = []
+
+        # 收集多选题字段并排序
+        multi_groups = defaultdict(list)
+        for _, row in self.attribute_df.iterrows():
+            orig_col = row['original_col']
+            if '_' in orig_col and row['type'] != 'character':
+                parts = orig_col.rsplit('_', 1)
+                if len(parts) == 2 and parts[1].isdigit():
+                    base_part, num_part = parts
+                    multi_groups[base_part].append((int(num_part), row))
+
+        # 对每个组进行排序并生成新编号
+        for base in multi_groups:
+            sorted_group = sorted(multi_groups[base], key=lambda x: x[0])
+            for new_idx, (orig_num, row) in enumerate(sorted_group, 1):
+                new_proc_col = f"{COLUMN_CLEAN_PATTERN.sub('0', base)}{new_idx:02d}"
+                multi_records.append((new_proc_col, row['len'], row['type']))
+
+        # 收集普通字段
+        for _, row in self.attribute_df.iterrows():
+            orig_col = row['original_col']
+            if '_' not in orig_col or not orig_col.split('_')[-1].isdigit() or row['type'] == 'character':
+                normal_records.append((row['processed_col'], row['len'], row['type']))
+
+        # 合并字段并生成定义
+        for proc_col, length, col_type in multi_records + normal_records:
+            end_pos = current_pos + length - 1
+            lines.append(f"{COLUMN_TYPES[col_type]} ${proc_col}=${current_pos}-{end_pos},")
+            current_pos = end_pos + 2
+
+        return lines
+
     def align_data(self) -> None:
         """数据对齐处理"""
         for col in self.raw_df.columns:
@@ -150,85 +158,28 @@ class DataProcessor:
 
     def _gbk_rjust(self, text: str, width: int) -> str:
         current_len = len(text.encode('gbk', errors='ignore'))
-        if current_len >= width:
-            return text
-        return ' ' * (width - current_len) + text
-
-    def analyze_multi_choice(self) -> None:
-        for orig_col in self.attribute_df['original_col']:
-            col_type = self.attribute_df.loc[
-                self.attribute_df['original_col'] == orig_col, 'type'
-            ].values[0]
-            if col_type == 'character':
-                continue
-
-            if '_' in orig_col:
-                base_part, _, num_part = orig_col.rpartition('_')
-                if not num_part.isdigit():
-                    continue
-
-                sub_num = int(num_part)
-                if 1 <= sub_num <= 99:
-                    clean_base = COLUMN_CLEAN_PATTERN.sub('0', base_part)
-                    self.multi_choice[clean_base] = max(
-                        self.multi_choice[clean_base],
-                        sub_num
-                    )
-
-    def generate_define(self) -> List[str]:
-        lines = []
-        current_pos = 1
-        for _, row in self.attribute_df.iterrows():
-            end_pos = current_pos + row['len'] - 1
-            prefix = COLUMN_TYPES[row['type']]
-            lines.append(
-                f"{prefix} ${row['processed_col']}=${current_pos}-{end_pos},"
-            )
-            current_pos = end_pos + 2
-        return lines
-
-    def generate_make(self) -> List[str]:
-        if not self.multi_choice:
-            return ["No multiple choice fields detected"]
-
-        lines = ["[*data ttl(;)="]
-        for base in sorted(self.multi_choice.keys()):
-            lines.append(f"{base};{self.multi_choice[base]};")
-        lines += [
-            "]",
-            "[*do i=1:[ttl.#]/2]",
-            "   [*do a=1:[ttl.i*2]]",
-            "      om $[ttl.i*2-1]=$[ttl.i*2-1]0[a]/1-999,",
-            "   [*end a]",
-            "[*end i]"
-        ]
-        return lines
+        return text if current_len >= width else ' ' * (width - current_len) + text
 
     def save_files(self) -> None:
         base_name = os.path.splitext(os.path.basename(self.file_path))[0]
         os.makedirs(self.output_dir, exist_ok=True)
 
+        # 保存dat文件
         dat_path = os.path.join(self.output_dir, f"{base_name}.dat")
         with open(dat_path, 'w', encoding='gbk') as f:
             for _, row in self.raw_df.iterrows():
-                line = ' '.join(row.astype(str)) + '\n'
-                f.write(line)
+                f.write(' '.join(row.astype(str)) + '\n')
 
+        # 保存define文件
         define_path = os.path.join(self.output_dir, "define.stp")
         with open(define_path, 'w', encoding='gbk') as f:
             f.write('\n'.join(self.generate_define()))
 
-        make_path = os.path.join(self.output_dir, "make.stp")
-        with open(make_path, 'w', encoding='gbk') as f:
-            f.write('\n'.join(self.generate_make()))
-
-    def run(self) -> None:  # 修改运行流程
+    def run(self) -> None:
         self.load_data()
-        self.filter_chinese_columns()  # 新增步骤
-        self.renumber_multi_choice_columns()  # 新增步骤
+        self.filter_chinese_columns()
         self.process_columns()
         self.align_data()
-        self.analyze_multi_choice()
         self.save_files()
 
         print("字段类型统计:")
@@ -242,8 +193,5 @@ if __name__ == "__main__":
         print("Usage: python data_define.py <input_csv> <output_dir>")
         sys.exit(1)
 
-    input_file = sys.argv[1]
-    output_dir = sys.argv[2]
-
-    processor = DataProcessor(input_file, output_dir)
+    processor = DataProcessor(sys.argv[1], sys.argv[2])
     processor.run()

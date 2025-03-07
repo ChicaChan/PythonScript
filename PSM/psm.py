@@ -4,16 +4,9 @@ from scipy.interpolate import interp1d
 from scipy.optimize import root_scalar
 import matplotlib
 
-# 更换后端为 TkAgg
 matplotlib.use('TkAgg')
-
-# 读取文件
 excel_file = pd.ExcelFile('data.xlsx')
-
-# 获取指定工作表中的数据
 df = excel_file.parse('Sheet1')
-
-# 设置图片清晰度
 plt.rcParams['figure.dpi'] = 200
 
 # 设置中文字体
@@ -35,7 +28,6 @@ plt.plot(x, y2, label='有点贵')
 plt.plot(x, y3, label='有点便宜')
 plt.plot(x, y4, label='太便宜')
 
-# 设置图表标题和坐标轴标签
 plt.title('价格与累计百分比关系图')
 plt.xlabel('价格')
 plt.xticks(rotation=45)
