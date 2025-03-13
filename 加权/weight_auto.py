@@ -188,7 +188,6 @@ def print_report(reports):
 """
 
 
-# 修改主程序部分
 if __name__ == "__main__":
     if len(sys.argv) < 3:
         print("参数错误，使用方法：")

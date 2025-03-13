@@ -1,7 +1,5 @@
 # -*- coding: utf-8 -*-
 import pandas as pd
-import numpy as np
-from itertools import combinations
 from tqdm import tqdm
 import matplotlib
 import matplotlib.pyplot as plt
@@ -15,7 +13,7 @@ plt.rcParams['axes.unicode_minus'] = False
 
 def turf_analysis(data, max_comb_size=10):
     """
-    改进的TURF分析算法，采用逐步贪心策略
+    TURF分析，采用逐步贪心策略
     """
     assert data.isin([0, 1]).all().all(), "输入数据必须为0/1格式"
 
@@ -66,7 +64,7 @@ def turf_analysis(data, max_comb_size=10):
 
 def generate_turf_report(analysis_result, output_file="turf_report.xlsx"):
     """
-    生成符合SPSS模板格式的报告
+    生成报告
     """
     df = analysis_result['结果']
     n = analysis_result['总样本量']
@@ -80,9 +78,9 @@ def generate_turf_report(analysis_result, output_file="turf_report.xlsx"):
         '统计': [f"{row['到达率']}\n{row['个案百分比']}" for _, row in df.iterrows()],
         '组大小': df['组大小'],
         '到达率': df['到达率'],
-        '个案百分比': [f"{int(row['到达率'] / n * 100)}%" for _, row in df.iterrows()],
+        '个案百分比': [f"{row['到达率'] / n * 100:.1f}%" for _, row in df.iterrows()],  # 修改1：添加小数位
         '频率': df['频率'],
-        '响应百分比': [f"{int(row['频率'] / total_freq * 100)}%" for _, row in df.iterrows()]
+        '响应百分比': [f"{row['频率'] / total_freq * 100:.1f}%" for _, row in df.iterrows()]  # 修改1：添加小数位
     })
 
     # 创建Excel报告
@@ -100,7 +98,8 @@ def generate_turf_report(analysis_result, output_file="turf_report.xlsx"):
 
     format_data = workbook.add_format({
         'text_wrap': True,
-        'valign': 'top',
+        'valign': 'vcenter',
+        'align': 'center',
         'border': 1
     })
 
@@ -132,14 +131,32 @@ def generate_turf_report(analysis_result, output_file="turf_report.xlsx"):
             worksheet.write(row_num, col_num, report_df.iloc[row_num - 3, col_num], format_data)
 
     # 创建图表
-    plt.figure(figsize=(10, 6))
+    plt.figure(figsize=(14, 6.5))
     ax = plt.subplot(111)
-    df['到达率'].plot(kind='line', marker='o', ax=ax, color='#4472C4', linewidth=2)
+
+    # 计算百分比
+    reach_percent = (df['到达率'] / n) * 100
+    response_percent = (df['频率'] / total_freq) * 100
+
+    # 合并坐标轴
+    all_values = pd.concat([reach_percent, response_percent])
+    y_min, y_max = 0, all_values.max() * 1.1  # 修改为从0开始
+
+    # 绘制双线
+    reach_line = ax.plot(reach_percent, marker='o', color='#4472C4',
+                         linewidth=2, label='到达率')
+    response_line = ax.plot(response_percent, marker='s', color='#ED7D31',
+                            linewidth=2, label='响应百分比')
+
+    # 设置坐标轴格式
     ax.set_xticks(range(len(df)))
     ax.set_xticklabels(df['组大小'])
-    ax.set_xlabel('组大小')
-    ax.set_ylabel('到达人数')
-    ax.set_title('到达率趋势图')
+    plt.subplots_adjust(bottom=0.15)
+    ax.set_xlabel('组大小', rotation=30)
+    ax.set_ylabel('百分比')
+    ax.set_ylim(y_min, y_max)
+    ax.legend(loc='upper left')
+    plt.title('G图', pad=20)
     ax.grid(True, linestyle='--', alpha=0.6)
 
     # 保存图表
@@ -147,8 +164,12 @@ def generate_turf_report(analysis_result, output_file="turf_report.xlsx"):
     plt.savefig(chart_path, dpi=300, bbox_inches='tight')
     plt.close()
 
-    # 插入图表
-    worksheet.insert_image('I3', chart_path)
+    # 创建新工作表并插入图表
+    chart_worksheet = workbook.add_worksheet('G图')
+    chart_worksheet.insert_image('A1', chart_path)
+
+    # 设置新工作表的列宽以适应图片
+    chart_worksheet.set_column('A:A', 50)
 
     writer.close()
     os.remove(chart_path)
