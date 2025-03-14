@@ -1,202 +1,182 @@
 # -*- coding: utf-8 -*-
 import pandas as pd
-import numpy as np
-import itertools
-from matplotlib import pyplot as plt
 from tqdm import tqdm
 import matplotlib
+import matplotlib.pyplot as plt
 import os
 import tempfile
 
-# 使用Agg后端以确保在无GUI环境下图片保存正确
 matplotlib.use('Agg')
 plt.rcParams['font.sans-serif'] = ['SimHei']
 plt.rcParams['axes.unicode_minus'] = False
 
 
-def turf_analysis(data, max_comb_size=3, top_combinations=3):
+def turf_analysis(data, max_comb_size=10):
     """
-    TURF分析核心算法
-    参数:
-        data: 包含0/1数据的DataFrame，每列代表一个产品，每行代表一个受访者
-        max_comb_size: 最大组合产品数（组合中的产品数量上限）
-        top_combinations: 每个组合大小保留的最佳组合数量
-
-    返回:
-        包含分析结果的字典，包含：
-         - 产品总数
-         - 受访者总数
-         - 各组合大小的分析结果
-         - 单产品覆盖率数据
+    TURF分析，采用逐步贪心策略
     """
-    # 数据有效性验证（必须为0/1数据）
-    assert data.isin([0, 1]).all().all(), "输入文件必须为0/1数据"
+    assert data.isin([0, 1]).all().all(), "输入数据必须为0/1格式"
 
-    products = data.columns.tolist()  # 产品列表
-    n_respondents = len(data)  # 样本总量
-    results = {}  # 存储每个组合大小的结果
-
-    single_coverage = data.sum()
+    products = data.columns.tolist()
+    n = len(data)
+    selected = []
+    results = []
+    cumulative_coverage = pd.Series(0, index=data.index)
 
     for k in range(1, max_comb_size + 1):
-        combs = []
-        # 生成所有可能的 k 产品组合
-        total_combs = len(list(itertools.combinations(products, k)))
-        iterator = itertools.combinations(products, k)
-        if total_combs > 1000:
-            iterator = tqdm(iterator, total=total_combs, desc=f'分析组合数 {k}')
+        best_add = None
+        best_coverage = 0
+        best_combination = []
+        remaining = [p for p in products if p not in selected]
 
-        for comb in iterator:
-            coverage = data[list(comb)].max(axis=1).sum()
-            combs.append({
-                'combination': comb,
-                'coverage': coverage,
-                'percentage': coverage / n_respondents  # 覆盖率百分比
+        for p in tqdm(remaining, desc=f'分析组合大小 {k}'):
+            temp_comb = selected + [p]
+            coverage = data[temp_comb].max(axis=1).sum()
+            if coverage > best_coverage:
+                best_coverage = coverage
+                best_add = p
+                best_combination = temp_comb
+
+        if best_add:
+            selected.append(best_add)
+            cumulative_coverage = cumulative_coverage | data[best_add]
+
+            freq = data[selected].sum().sum()
+            total_freq = data.sum().sum()
+
+            results.append({
+                '组大小': k,
+                '新增变量': best_add,
+                '保留变量': selected[:-1],
+                '到达率': best_coverage,
+                '个案百分比': f"{best_coverage / n:.0%}",
+                '频率': freq,
+                '响应百分比': f"{freq / total_freq:.0%}"
             })
 
-        sorted_combs = sorted(combs, key=lambda x: -x['coverage'])
-        results[k] = {
-            'top_combinations': sorted_combs[:top_combinations],
-            'max_coverage': sorted_combs[0]['coverage'] if sorted_combs else 0
-        }
-
     return {
-        'n_products': len(products),
-        'n_respondents': n_respondents,
-        'results': results,
-        'single_coverage': single_coverage
+        '总样本量': n,
+        '总频率': data.sum().sum(),
+        '结果': pd.DataFrame(results),
+        '最终组合': selected
     }
 
 
-def generate_turf_report(analysis_result, output_excel=None):
+def generate_turf_report(analysis_result, output_file="turf_report.xlsx"):
     """
-    生成TURF分析报告和可视化图表
-    参数:
-        analysis_result: turf_analysis函数的返回结果
-        output_excel: 输出Excel文件路径（None时直接显示图表）
-
-    返回:
-        格式化的文本报告字符串
+    生成报告
     """
-    cmb_sizes = sorted(analysis_result['results'].keys())  # 分析组合大小
-    total = analysis_result['n_respondents']
-    total_single = analysis_result['single_coverage'].sum()
+    df = analysis_result['结果']
+    n = analysis_result['总样本量']
+    total_freq = analysis_result['总频率']
 
-    # 构建多列分布的报告文本列表，方便写入Excel时分栏显示
-    report_lines = []
-    separator = "=" * 70
-    report_lines.append(separator)
-    report_lines.append("              TURF 分析报告")
-    report_lines.append(separator)
-    report_lines.append(f"样本总量: {total}")
-    report_lines.append(f"产品总数: {analysis_result['n_products']}")
-    report_lines.append("")  # 空行
+    # 创建格式化表格
+    report_df = pd.DataFrame({
+        '变量': ['ADDED: ' + row['新增变量'] + '\nKEPT: ' + ', '.join(row['保留变量'])
+                 if row['组大小'] > 1 else 'ADDED: ' + row['新增变量']
+                 for _, row in df.iterrows()],
+        # '统计': [f"{row['到达率']}\n{row['个案百分比']}" for _, row in df.iterrows()],
+        '组大小': df['组大小'],
+        '到达率': df['到达率'],
+        '个案百分比': [f"{row['到达率'] / n * 100:.1f}%" for _, row in df.iterrows()],
+        '频率': df['频率'],
+        '响应百分比': [f"{row['频率'] / total_freq * 100:.1f}%" for _, row in df.iterrows()]
+    })
 
-    report_lines.append("【单产品覆盖率】")
-    single_cov = analysis_result['single_coverage'].sort_values(ascending=False)
-    for product, cov in single_cov.items():
-        report_lines.append(f"- {product}: {cov} ({cov / total:.1%})")
-    report_lines.append("")  # 空行
+    writer = pd.ExcelWriter(output_file, engine='xlsxwriter')
+    workbook = writer.book
 
-    report_lines.append("【多产品组合分析】")
-    # 用于图表绘制的数据
-    plot_reach_rates = []  # 最大触达率
-    plot_frequencies = []  # 最佳组合频次占比
+    # 数据表格式
+    format_header = workbook.add_format({
+        'bold': True,
+        'border': 1,
+        'align': 'center',
+        'valign': 'vcenter',
+        'bg_color': '#D9E1F2'
+    })
 
-    for k in cmb_sizes:
-        res = analysis_result['results'][k]
-        top_combos = res['top_combinations']
-        if not top_combos:
-            continue
+    format_data = workbook.add_format({
+        'text_wrap': True,
+        'valign': 'vcenter',
+        'align': 'center',
+        'border': 1
+    })
 
-        best_combo = top_combos[0]
-        reach_rate = best_combo['coverage'] / total * 100  # 触达率百分比
-        best_freq = sum(analysis_result['single_coverage'][prod] for prod in best_combo['combination'])
-        best_frequency = (best_freq / total_single) * 100 if total_single > 0 else 0
+    report_df.to_excel(writer, sheet_name='TURF分析', index=False, startrow=2)
+    worksheet = writer.sheets['TURF分析']
 
-        plot_reach_rates.append(reach_rate)
-        plot_frequencies.append(best_frequency)
+    # 列宽
+    worksheet.set_column('A:A', 35)
+    worksheet.set_column('B:B', 15)
+    worksheet.set_column('C:G', 12)
 
-        report_lines.append(separator)
-        report_lines.append(f"组合大小：{k}")
-        report_lines.append(f"  -> 最佳组合到达率: {reach_rate:.1f}%   频次占比: {best_frequency:.1f}%")
-        for i, comb in enumerate(top_combos):
-            combo_freq = sum(analysis_result['single_coverage'][prod] for prod in comb['combination'])
-            frequency = (combo_freq / total_single) * 100 if total_single > 0 else 0
-            report_lines.append(
-                f"      Top {i + 1}: 组合: {', '.join(comb['combination'])}  -> 到达率: {comb['percentage'] * 100:.1f}%, 频次: {frequency:.1f}%"
-            )
-    report_lines.append(separator)
+    # 添加标题
+    title_format = workbook.add_format({
+        'bold': True,
+        'font_size': 16,
+        'align': 'center',
+        'valign': 'vcenter'
+    })
+    worksheet.merge_range('A1:G1', '最佳到达率及频率（按组大小排列）', title_format)
 
-    final_report = "\n".join(report_lines)
-    print(final_report)
+    # 表头格式
+    for col_num, value in enumerate(report_df.columns.values):
+        worksheet.write(2, col_num, value, format_header)
 
-    # 绘制图表：触达率与频次占比随组合大小的变化
-    plt.figure(figsize=(10, 6))
-    plt.plot(cmb_sizes, plot_reach_rates, 'bo-', label='到达率 (%)', markersize=8)
-    plt.plot(cmb_sizes, plot_frequencies, 'r^-', label='频次 (%)', markersize=8)
-    plt.xlabel('组合中产品数量', fontsize=12)
-    plt.ylabel('百分比 (%)', fontsize=12)
-    plt.title('TURF 分析图表', fontsize=14)
-    plt.xticks(cmb_sizes)
-    plt.grid(True, linestyle='--', alpha=0.6)
-    plt.legend(fontsize=12)
-    for x, y in zip(cmb_sizes, plot_reach_rates):
-        plt.text(x, y, f'{y:.1f}%', color='blue', fontsize=10, ha='center', va='bottom')
-    for x, y in zip(cmb_sizes, plot_frequencies):
-        plt.text(x, y, f'{y:.1f}%', color='red', fontsize=10, ha='center', va='top')
+    # 数据格式
+    for row_num in range(3, len(report_df) + 3):
+        for col_num in range(6):
+            worksheet.write(row_num, col_num, report_df.iloc[row_num - 3, col_num], format_data)
 
-    if output_excel:
-        # 保存图表到临时图片文件
-        temp_image_path = os.path.join(tempfile.gettempdir(), "temp_chart.png")
-        plt.savefig(temp_image_path, dpi=300, bbox_inches='tight')
-        plt.close()
+    plt.figure(figsize=(14, 6.5))
+    ax = plt.subplot(111)
 
-        # 写入Excel文件，需要用xlsxwriter引擎
-        writer = pd.ExcelWriter(output_excel, engine='xlsxwriter')
-        workbook = writer.book
+    # 计算百分比
+    reach_percent = (df['到达率'] / n) * 100
+    response_percent = (df['频率'] / total_freq) * 100
 
-        # 定义格式
-        format_title = workbook.add_format({'bold': True, 'font_color': 'blue', 'font_size': 14})
-        format_cell = workbook.add_format({'text_wrap': True, 'valign': 'top', 'font_size': 11})
+    # 合并坐标轴
+    all_values = pd.concat([reach_percent, response_percent])
+    y_min, y_max = 0, all_values.max() * 1.1
 
-        # 创建报告工作表：将长报告按列分布，减轻单列压力
-        report_ws = workbook.add_worksheet("报告")
-        # 为了美观，将报告文本分成3列显示
-        n_cols = 3
-        n_lines = len(report_lines)
-        col_height = (n_lines // n_cols) + (1 if n_lines % n_cols else 0)
-        for idx, line in enumerate(report_lines):
-            col = idx // col_height
-            row = idx % col_height
-            # 对于标题及分隔行使用高亮显示
-            if (line.startswith("=") or "TURF 分析报告" in line):
-                report_ws.write(row, col, line, format_title)
-            else:
-                report_ws.write(row, col, line, format_cell)
-        # 自动调整列宽
-        for i in range(n_cols):
-            report_ws.set_column(i, i, 40)
+    # 绘制双线
+    reach_line = ax.plot(reach_percent, marker='o', color='#4472C4',
+                         linewidth=2, label='到达率')
+    response_line = ax.plot(response_percent, marker='s', color='#ED7D31',
+                            linewidth=2, label='响应百分比')
 
-        # 创建图表页，并插入图表图片
-        chart_ws = workbook.add_worksheet("图表")
-        chart_ws.insert_image('B2', temp_image_path, {'x_scale': 0.9, 'y_scale': 0.9})
+    # 坐标轴格式
+    ax.set_xticks(range(len(df)))
+    ax.set_xticklabels(df['组大小'])
+    plt.subplots_adjust(bottom=0.15)
+    ax.set_xlabel('组大小', rotation=30)
+    ax.set_ylabel('百分比')
+    ax.set_ylim(y_min, y_max)
+    ax.legend(loc='upper left')
+    plt.title('G图', pad=20)
+    ax.grid(True, linestyle='--', alpha=0.6)
 
-        # 保存Excel文件，确保数据写入到文件中
-        writer.close()
-        if os.path.exists(temp_image_path):
-            os.remove(temp_image_path)
-    else:
-        plt.show()
+    chart_path = os.path.join(tempfile.gettempdir(), 'turf_chart.png')
+    plt.savefig(chart_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    chart_worksheet = workbook.add_worksheet('G图')
+    chart_worksheet.insert_image('A1', chart_path)
 
-    return final_report
+    # 数据表列宽
+    chart_worksheet.set_column('A:A', 50)
+
+    writer.close()
+    os.remove(chart_path)
+
+    print(f"报告已生成: {output_file}")
+    return report_df
 
 
 if __name__ == "__main__":
-    data = pd.read_csv("JK1_turf.csv", encoding='utf-8')
+    data = pd.read_csv("data(多变量).csv", encoding='utf-8')
+    # 统计data的01字段个数
+    col_count = data.apply(lambda col: set(col.dropna().unique()).issubset({0, 1})).sum()
     valid_cols = data.columns[data.apply(lambda col: set(col.dropna().unique()).issubset({0, 1}))]
     data = data[valid_cols]
-
-    analysis = turf_analysis(data, max_comb_size=5, top_combinations=3)
-
-    generate_turf_report(analysis, output_excel="turf_report.xlsx")
+    analysis = turf_analysis(data, max_comb_size=col_count)
+    report = generate_turf_report(analysis)
