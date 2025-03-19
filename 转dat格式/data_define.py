@@ -17,7 +17,6 @@ COLUMN_TYPES = {
 PD_VERSION = pd.__version__.split('.')[0]
 
 
-#  工具函数 
 def detect_encoding(file_path: str) -> str:
     """检测文件编码"""
     for encoding in ENCODINGS:
