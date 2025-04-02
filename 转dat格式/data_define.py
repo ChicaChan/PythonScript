@@ -128,17 +128,23 @@ class DataProcessor:
                 continue
 
             if '_' in orig_col:
-                base_part, _, num_part = orig_col.rpartition('_')
-                if not num_part.isdigit():
+                # 使用v3版本的正则匹配逻辑
+                match = re.match(r'^(.+?)(\d+)$', orig_col)
+                if not match:
                     continue
-
-                sub_num = int(num_part)
-                if 1 <= sub_num <= 99:
-                    clean_base = COLUMN_CLEAN_PATTERN.sub('0', base_part)
-                    self.multi_choice[clean_base] = max(
-                        self.multi_choice[clean_base],
-                        sub_num
-                    )
+                
+                base_part = match.group(1)
+                num_part = match.group(2)
+                
+                # 保留原始基题号不进行替换
+                clean_base = COLUMN_CLEAN_PATTERN.sub('0', base_part.rstrip('_'))
+                
+                try:
+                    sub_num = int(num_part)
+                    if 1 <= sub_num <= 999:
+                        self.multi_choice[clean_base] += 1
+                except ValueError:
+                    continue
 
     def generate_define(self) -> List[str]:
         """生成define.stp"""

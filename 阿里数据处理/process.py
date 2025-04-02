@@ -1,7 +1,7 @@
 import pandas as pd
 import re
 
-df = pd.read_excel('阿里数据处理\\raw_data.xlsx')
+df = pd.read_excel('raw_data.xlsx')
 columns = df.columns
 
 multi_choice_bases = set()
@@ -27,4 +27,4 @@ for base in multi_choice_bases:
         df[base] = df[related_cols].apply(process_row, axis=1)
         df = df.drop(columns=related_cols)
 
-df.to_excel('阿里数据处理\\processed_data.xlsx', index=False)
+df.to_excel('processed_data.xlsx', index=False)
