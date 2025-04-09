@@ -2,11 +2,9 @@ import re
 import os
 import sys
 
-# 导入LS_LP.py中的convert_r_condition函数
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from LS_LP import convert_r_condition
 
-# 用户提供的所有R语言条件
 test_cases = [
     'data$x',
     'data$x[(data$S1==1)]',
