@@ -8,8 +8,8 @@ from openpyxl import load_workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from pulp import *
 
-file_name = 'input.xlsx'
-
+file_name = 'input-xinzhi-250312.xlsx'
+TIMEOUT = 100
 # 配置日志
 script_dir = os.path.dirname(os.path.abspath(__file__))
 log_dir = os.path.join(script_dir, 'logs')
@@ -59,7 +59,7 @@ def convert_r_condition(condition):
                             value_list[i] = f"'{v}'"
                 return f"{col}.isin({value_list})"
             
-            # 替换所有的data$为空
+            # 替换data$为空
             r_cond = r_cond.replace('data$', '')
             # 将 )|( 替换为 ) | (
             if ')|(' in r_cond:
@@ -105,7 +105,7 @@ def validate_input_data(data_df, cond_df):
     
     # 检查total条件是否存在
     if 'total' not in cond_df['condition'].values:
-        raise ValueError("条件表中缺少'total'条件行")
+        raise ValueError("条件表中缺少'total'条件")
     
     # 验证条件语法
     for _, row in cond_df[cond_df['condition'] != 'total'].iterrows():
@@ -144,8 +144,16 @@ def parse_conditions(cond_df):
     
     return total, conditions
 
-def linear_programming_sampling(data_df, conditions, total):
-    """使用线性规划进行抽数"""
+def linear_programming_sampling(data_df, conditions, total, timeout=TIMEOUT, fallback=True):
+    """使用线性规划进行抽数，使抽样结果尽量接近期望值
+    
+    参数:
+        data_df: 数据DataFrame
+        conditions: 条件
+        total: 目标总样本量
+        timeout: 求解超时时间(秒)
+        fallback: 是否在复杂求解失败时回退到简单方法
+    """
     logging.info(f"开始抽数，目标样本量: {total}")
     
     # 原始数据
@@ -168,56 +176,199 @@ def linear_programming_sampling(data_df, conditions, total):
     id_to_var = dict(zip(group_counts['_combine_id'], group_counts['var_name']))
     data_df['_var_name'] = data_df['_combine_id'].map(id_to_var)
     
-    # 创建线性规划
-    prob = LpProblem("Sampling_Problem", LpMaximize)
+    # 判断条件数量，如果条件过多，使用优化的方法
+    complex_conditions = len(conditions) > 15
+    if complex_conditions:
+        logging.info(f"检测到{len(conditions)}个条件，使用优化的求解方法")
     
-    # 创建决策变量
-    var_dict = {}
-    for _, row in group_counts.iterrows():
-        var_name = row['var_name']
-        raw_count = row['raw_count']
-        var_dict[var_name] = LpVariable(var_name, lowBound=0, upBound=raw_count, cat='Integer')
-    
-    # 目标函数
-    prob += lpSum(var_dict.values())
-    
-    # 约束条件1：总样本量等于目标总量
-    prob += lpSum(var_dict.values()) == total, "Total_Samples"
-    
-    # 约束条件2：样本量在min和max之间
-    for i, cond in enumerate(conditions):
-        mask = data_df.eval(cond['condition'])
-        cond_vars = data_df.loc[mask, '_var_name'].unique()
+    try:
+        # 创建线性规划问题
+        if complex_conditions:
+            # 使用聚合偏差变量(所有条件偏差绝对值之和/条件数量)
+            prob = LpProblem("Sampling_Problem", LpMinimize)
+            
+            # 创建决策变量
+            var_dict = {}
+            for _, row in group_counts.iterrows():
+                var_name = row['var_name']
+                raw_count = row['raw_count']
+                var_dict[var_name] = LpVariable(var_name, lowBound=0, upBound=raw_count, cat='Integer')
+            
+            # 创建单个总偏差变量
+            total_deviation = LpVariable("total_deviation", lowBound=0, cat='Continuous')
+            
+            # 目标函数：最小化总偏差
+            prob += total_deviation, "Minimize_Total_Deviation"
+            
+            # 约束条件1：总样本量等于目标总量
+            prob += lpSum(var_dict.values()) == total, "Total_Samples"
+            
+            # 约束条件2：计算每个条件的偏差并约束总偏差
+            all_deviations = []
+            for i, cond in enumerate(conditions):
+                mask = data_df.eval(cond['condition'])
+                cond_vars = data_df.loc[mask, '_var_name'].unique()
+                
+                if cond_vars.size > 0:
+                    # 条件变量的总和表达式
+                    cond_sum = lpSum([var_dict[var] for var in cond_vars if var in var_dict])
+                    
+                    # 各条件的偏差变量
+                    deviation_var = LpVariable(f"dev_{i}", lowBound=0, cat='Continuous')
+                    all_deviations.append(deviation_var)
+                    
+                    # 偏差约束
+                    prob += deviation_var >= cond_sum - cond['quota'], f"Dev_Constraint_Pos_{i}"
+                    prob += deviation_var >= cond['quota'] - cond_sum, f"Dev_Constraint_Neg_{i}"
+                    
+                    # 最小约束
+                    prob += cond_sum >= cond['min'], f"Min_Constraint_{i}"
+                    # 最大约束
+                    if cond['max'] != float('inf'):
+                        prob += cond_sum <= cond['max'], f"Max_Constraint_{i}"
+            
+            # 总偏差必须大于等于所有条件偏差的加权和
+            prob += total_deviation >= lpSum(all_deviations) / len(conditions), "Total_Deviation_Constraint"
+            
+        else:
+            # 原始版本：为每个条件使用一对偏差变量
+            prob = LpProblem("Sampling_Problem", LpMinimize)
+            
+            # 创建决策变量
+            var_dict = {}
+            for _, row in group_counts.iterrows():
+                var_name = row['var_name']
+                raw_count = row['raw_count']
+                var_dict[var_name] = LpVariable(var_name, lowBound=0, upBound=raw_count, cat='Integer')
+            
+            # 偏差变量 - 用于测量与配额的差异
+            deviation_vars = {}
+            for i, cond in enumerate(conditions):
+                # 正偏差 (实际 > 配额)
+                deviation_vars[f'pos_dev_{i}'] = LpVariable(f'pos_dev_{i}', lowBound=0, cat='Continuous')
+                # 负偏差 (实际 < 配额)
+                deviation_vars[f'neg_dev_{i}'] = LpVariable(f'neg_dev_{i}', lowBound=0, cat='Continuous')
+            
+            # 目标函数：最小化所有条件的偏差总和
+            prob += lpSum([deviation_vars[f'pos_dev_{i}'] + deviation_vars[f'neg_dev_{i}'] for i in range(len(conditions))])
+            
+            # 约束条件1：总样本量等于目标总量
+            prob += lpSum(var_dict.values()) == total, "Total_Samples"
+            
+            # 约束条件2：样本量在min和max之间，并设置偏差变量
+            for i, cond in enumerate(conditions):
+                mask = data_df.eval(cond['condition'])
+                cond_vars = data_df.loc[mask, '_var_name'].unique()
+                
+                if cond_vars.size > 0:
+                    # 创建条件变量的总和表达式
+                    cond_sum = lpSum([var_dict[var] for var in cond_vars if var in var_dict])
+                    
+                    # 设置软约束 - 测量与配额的差异，但不强制精确等于
+                    prob += cond_sum - cond['quota'] <= deviation_vars[f'pos_dev_{i}'], f"Pos_Deviation_Constraint_{i}"
+                    prob += cond['quota'] - cond_sum <= deviation_vars[f'neg_dev_{i}'], f"Neg_Deviation_Constraint_{i}"
+                    
+                    # 最小约束
+                    prob += cond_sum >= cond['min'], f"Min_Constraint_{i}"
+                    # 最大约束
+                    if cond['max'] != float('inf'):
+                        prob += cond_sum <= cond['max'], f"Max_Constraint_{i}"
         
-        # 创建条件约束
-        if cond_vars.size > 0:
-            # 最小约束
-            prob += lpSum([var_dict[var] for var in cond_vars if var in var_dict]) >= cond['min'], f"Min_Constraint_{i}"
-            # 最大约束
-            if cond['max'] != float('inf'):
-                prob += lpSum([var_dict[var] for var in cond_vars if var in var_dict]) <= cond['max'], f"Max_Constraint_{i}"
-    
-    # 约束条件3：每个组合的抽数不超过其原始数量
-    for var_name, raw_count in zip(group_counts['var_name'], group_counts['raw_count']):
-        prob += var_dict[var_name] <= raw_count, f"Raw_Limit_{var_name}"
-    
-    # 求解问题
-    logging.info("求解线性规划问题...")
-    prob.solve(PULP_CBC_CMD(msg=False))
-    
-    # 求解结果
-    if LpStatus[prob.status] != 'Optimal':
-        error_msg = f"线性规划求解失败，状态: {LpStatus[prob.status]}"
-        logging.error(error_msg)
-        raise ValueError(error_msg)
-    
-    logging.info(f"线性规划求解成功，状态: {LpStatus[prob.status]}")
-    
-    # 提取结果
-    results = {}
-    for v in prob.variables():
-        if v.varValue > 0:
-            results[v.name] = int(v.varValue)
+        # 约束条件3：每个组合的抽数不超过其原始数量
+        for var_name, raw_count in zip(group_counts['var_name'], group_counts['raw_count']):
+            prob += var_dict[var_name] <= raw_count, f"Raw_Limit_{var_name}"
+        
+        # 求解问题，设置超时
+        logging.info(f"求解线性规划问题，超时时间: {timeout}秒...")
+        solver = PULP_CBC_CMD(msg=False, timeLimit=timeout)
+        prob.solve(solver)
+        
+        # 求解结果
+        if LpStatus[prob.status] != 'Optimal':
+            error_msg = f"线性规划求解失败，状态: {LpStatus[prob.status]}"
+            logging.error(error_msg)
+            if not fallback:
+                raise ValueError(error_msg)
+            else:
+                raise Exception("尝试回退到简单方法")
+        
+        logging.info(f"线性规划求解成功，状态: {LpStatus[prob.status]}")
+        
+        # 分析偏差
+        if complex_conditions:
+            logging.info(f"总偏差: {prob.objective.value():.2f}")
+        else:
+            total_deviation = 0
+            for i, cond in enumerate(conditions):
+                pos_dev = prob.variablesDict()[f'pos_dev_{i}'].value()
+                neg_dev = prob.variablesDict()[f'neg_dev_{i}'].value()
+                actual_dev = pos_dev - neg_dev
+                total_deviation += abs(actual_dev)
+                logging.info(f"条件 '{cond['condition']}' 的偏差: {actual_dev:.2f} (目标: {cond['quota']})")
+            
+            logging.info(f"总偏差: {total_deviation:.2f}")
+        
+        # 提取结果
+        results = {}
+        for v in prob.variables():
+            if v.name.startswith('x') and v.varValue > 0:
+                results[v.name] = int(v.varValue)
+        
+    except Exception as e:
+        if not fallback:
+            raise ValueError(f"线性规划求解失败: {str(e)}")
+        
+        logging.warning(f"优化方法求解失败: {str(e)}，回退到简单方法")
+        
+        # 回退到简单方法
+        prob = LpProblem("Sampling_Problem_Fallback", LpMaximize)
+        
+        # 创建决策变量
+        var_dict = {}
+        for _, row in group_counts.iterrows():
+            var_name = row['var_name']
+            raw_count = row['raw_count']
+            var_dict[var_name] = LpVariable(var_name, lowBound=0, upBound=raw_count, cat='Integer')
+        
+        # 目标函数
+        prob += lpSum(var_dict.values())
+        
+        # 约束条件1：总样本量等于total
+        prob += lpSum(var_dict.values()) == total, "Total_Samples"
+        
+        # 约束条件2：样本量在min和max之间
+        for i, cond in enumerate(conditions):
+            mask = data_df.eval(cond['condition'])
+            cond_vars = data_df.loc[mask, '_var_name'].unique()
+            
+            if cond_vars.size > 0:
+                # 最小约束
+                prob += lpSum([var_dict[var] for var in cond_vars if var in var_dict]) >= cond['min'], f"Min_Constraint_{i}"
+                # 最大约束
+                if cond['max'] != float('inf'):
+                    prob += lpSum([var_dict[var] for var in cond_vars if var in var_dict]) <= cond['max'], f"Max_Constraint_{i}"
+        
+        # 约束条件3：每个组合的抽数不超过其原始数量
+        for var_name, raw_count in zip(group_counts['var_name'], group_counts['raw_count']):
+            prob += var_dict[var_name] <= raw_count, f"Raw_Limit_{var_name}"
+        
+        # 求解问题
+        logging.info("使用简单方法求解线性规划问题...")
+        prob.solve(PULP_CBC_CMD(msg=False))
+        
+        # 求解结果
+        if LpStatus[prob.status] != 'Optimal':
+            error_msg = f"简单方法线性规划求解失败，状态: {LpStatus[prob.status]}"
+            logging.error(error_msg)
+            raise ValueError(error_msg)
+        
+        logging.info(f"简单方法线性规划求解成功，状态: {LpStatus[prob.status]}")
+        
+        # 提取结果
+        results = {}
+        for v in prob.variables():
+            if v.varValue > 0 and v.name.startswith('x'):
+                results[v.name] = int(v.varValue)
     
     # 根据结果抽数
     sampled = pd.DataFrame()
@@ -354,7 +505,7 @@ def format_excel(writer, report_df):
 
 def main():
     try:
-        logging.info("开始执行抽数程序")
+        logging.info("开始抽数")
         
         script_dir = os.path.dirname(os.path.abspath(__file__))
         
@@ -376,7 +527,8 @@ def main():
         # 执行线性规划抽数
         original_data = data_df.copy()
         try:
-            sampled, full_data = linear_programming_sampling(data_df, conditions, total)
+            # 设置超时时间，启用回退机制
+            sampled, full_data = linear_programming_sampling(data_df, conditions, total, timeout=TIMEOUT, fallback=True)
             
             # 生成报告
             report_df = generate_report(sampled, conditions, original_data, total)
