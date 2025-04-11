@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 外部数据处理脚本
 功能：将多选题数据合并为单行数据,用分号隔开
@@ -6,11 +7,13 @@ import pandas as pd
 import re
 import os
 
-script_dir = os.path.dirname(os.path.abspath(__file__))
-input_file = os.path.join(script_dir, "input", "raw_data.xlsx")
-output_file = os.path.join(script_dir, "output", "processed_data.xlsx")
+filename = '示例'
 
-df = pd.read_excel(input_file)
+script_dir = os.path.dirname(os.path.abspath(__file__))
+input_file = os.path.join(script_dir, "input", f"{filename}.csv")
+output_file = os.path.join(script_dir, "output", f"{filename}_output.csv")
+
+df = pd.read_csv(input_file, encoding='gb2312')
 columns = df.columns
 
 multi_choice_bases = set()
@@ -36,5 +39,5 @@ for base in multi_choice_bases:
         df[base] = df[related_cols].apply(process_row, axis=1)
         df = df.drop(columns=related_cols)
 
-df.to_excel(output_file, index=False)
+df.to_csv(output_file, index=False)
 print(f"处理完成，已保存到: {output_file}")

@@ -3,6 +3,8 @@ import pandas as pd
 import re
 import os
 
+filename = '示例'
+
 def process_multiple_choice(df):
     """
     处理多选题合并
@@ -153,8 +155,8 @@ def combined_processing(input_file, final_output=None):
 
 if __name__ == "__main__":
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    input_path = os.path.join(script_dir, "input", "示例.csv")
-    output_path = os.path.join(script_dir, "output", "示例_final.csv")
+    input_path = os.path.join(script_dir, "input", f"{filename}.csv")
+    output_path = os.path.join(script_dir, "output", f"{filename}_final.csv")
     
     if os.path.exists(input_path):
         combined_processing(input_path, output_path)

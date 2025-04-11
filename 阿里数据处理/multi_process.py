@@ -10,6 +10,8 @@ import pandas as pd
 import re
 import os
 
+filename = '示例'
+
 def process_matrix_data(input_file, output_file=None):
     # 检测文件编码
     with open(input_file, 'rb') as f:
@@ -43,7 +45,6 @@ def process_matrix_data(input_file, output_file=None):
     
     pattern = re.compile(r'^([a-zA-Z]+\d*)_(\d+)$')
     
-    # 存储需要处理的列及其对应的数字
     columns_to_process = {}
     
     # 识别符合格式的列名
@@ -85,8 +86,8 @@ def process_matrix_data(input_file, output_file=None):
 
 def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    input_file = os.path.join(script_dir, "input", "示例.csv")
-    output_file = os.path.join(script_dir, "output", "示例_processed.csv")
+    input_file = os.path.join(script_dir, "input", f"{filename}.csv")
+    output_file = os.path.join(script_dir, "output", f"{filename}_processed.csv")
     
     # 检查文件是否存在
     if not os.path.exists(input_file):
@@ -95,7 +96,7 @@ def main():
     
     # 处理数据
     process_matrix_data(input_file, output_file)
-    print("脚本执行完毕，请检查处理后的文件")
+    print("脚本执行完毕")
 
 if __name__ == "__main__":
     main()
