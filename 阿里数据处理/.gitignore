@@ -47,9 +47,7 @@ Thumbs.db
 /.mvn/
 /mvnw.cmd
 /mvnw
-*.log
-/logs/
+*.xlsx
+*.csv
 /input/
 /output/
-*.csv
-*.xlsx
