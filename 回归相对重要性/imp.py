@@ -2,37 +2,23 @@
 import pandas as pd
 from relativeImp import relativeImp
 
-df = pd.read_csv("D:\\workplace\\项目\\已完结\\LKK李锦记HK AIPL 24H1\\table\\table.csv", encoding='utf-8')
+df = pd.read_csv("回归相对重要性\\table.csv", encoding='utf-8')
+# 筛选数据
+#df = df[df['SERIAL'] <= 100]
+
+
 yName = 'B301'
-xNames = ['C1T1W1',
-          'C1T2W1',
-          'C1T3W1',
-          'C1T4W1',
-          'C1T5W1',
-          'C1T6W1',
-          'C1T7W1',
-          'C1T8W1',
-          'C1T9W1',
-          'C1T10W1',
-          'C1T11W1',
-          'C1T12W1',
-          'C1T13W1',
-          'C1T14W1',
-          'C1T15W1',
-          'C1T16W1',
-          'C1T17W1',
-          'C1T18W1',
-          'C1T19W1',
-          'C1T20W1',
-          'C1T21W1',
-          'C1T22W1',
-          'C1T23W1',
-          'C1T24W1',
-          'C1T25W1',
-          'C1T26W1',]
+
+# 使用其余的变量作为解释变量
+xNames = list(df.columns)
+xNames.remove(yName)
+xNames.remove('SERIAL')          
 
 df_results = relativeImp(df, outcomeName=yName, driverNames=xNames)
+
+# 只保存normalizedImp
+df_results = df_results[['driver','normRelaImpt']]
 print(df_results)
 
 # 保存为Excel
-df_results.to_excel("D:\\workplace\\项目\\已完结\\LKK李锦记HK AIPL 24H1\\table\\results.xlsx", index=False)
+df_results.to_excel("回归相对重要性\\results.xlsx", index=False)
