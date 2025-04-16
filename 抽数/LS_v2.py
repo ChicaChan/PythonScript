@@ -8,7 +8,7 @@ from openpyxl import load_workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from pulp import *
 
-file_name = 'input-xinzhi-250312.xlsx'
+file_name = 'input.xlsx'
 TIMEOUT = 100
 # 配置日志
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -406,7 +406,7 @@ def linear_programming_sampling(data_df, conditions, total, timeout=TIMEOUT, fal
             logging.error(error_msg)
             raise ValueError(error_msg)
     
-    logging.info(f"抽数成功，共抽取 {len(sampled)} 个样本，所有条件都满足min-max限制")
+    logging.info(f"抽数成功，共抽取 {len(sampled)} 个样本")
     
     # SL列
     original_df['SL'] = 0

@@ -9,7 +9,7 @@
 .project
 .settings
 .idea
- ##filter databfile¡¢sln file##
+ ##filter databfileï¿½ï¿½sln file##
 *.mdb
 *.ldb
 *.sln
@@ -47,3 +47,5 @@ Thumbs.db
 /.mvn/
 /mvnw.cmd
 /mvnw
+*.xlsx
+*.csv
