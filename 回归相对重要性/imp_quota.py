@@ -5,7 +5,7 @@ from relativeImp import relativeImp
 # 读取数据
 df = pd.read_csv("回归相对重要性\\data.csv", encoding='gbk')
 
-# 创建ExcelWriter对象，准备写入多个Sheet
+# 创建ExcelWriter对象，写入多个Sheet
 with pd.ExcelWriter("回归相对重要性\\quota_results.xlsx", engine="openpyxl") as writer:
     # 遍历所有的W和BRAND_C1
     for BRAND_B1 in range(1, 14):
