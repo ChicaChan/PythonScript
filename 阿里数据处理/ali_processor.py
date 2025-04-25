@@ -35,9 +35,12 @@ def process_multiple_choice(df):
                 axis=1
             )
     
-    # 添加新列
-    for base, column_data in new_columns.items():
-        df[base] = column_data
+    # 使用pd.concat一次性添加所有新列，而不是循环添加
+    if new_columns:
+        # 将字典转换为DataFrame
+        new_df = pd.DataFrame(new_columns)
+        # 使用concat一次性合并
+        df = pd.concat([df, new_df], axis=1)
     
     # 删除原列
     columns_to_drop = []
@@ -70,11 +73,13 @@ def process_matrix_data(input_file, output_file=None):
     
     # 读取CSV文件
     try:
-        df = pd.read_csv(input_file, encoding=encoding)
+        # 添加low_memory=False解决DtypeWarning
+        df = pd.read_csv(input_file, encoding=encoding, low_memory=False)
     except UnicodeDecodeError:
         for enc in ['gbk', 'gb2312', 'utf-8-sig', 'latin1']:
             try:
-                df = pd.read_csv(input_file, encoding=enc)
+                # 添加low_memory=False解决DtypeWarning
+                df = pd.read_csv(input_file, encoding=enc, low_memory=False)
                 encoding = enc
                 print(f"使用编码 {enc} 成功读取文件")
                 break
@@ -127,6 +132,7 @@ def process_matrix_data(input_file, output_file=None):
     return df
 
 def combined_processing(input_file, final_output=None):
+    # 添加low_memory=False解决DtypeWarning
     matrix_processed = process_matrix_data(input_file)
     
     final_df = process_multiple_choice(matrix_processed)

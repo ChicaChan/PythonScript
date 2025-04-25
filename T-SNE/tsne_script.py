@@ -150,7 +150,7 @@ def evaluate_tsne_params(X, perplexity_range, learning_rates, n_iter_range, metr
         try:
             start_time = time.time()
             
-            # 执行t-SNE降维，启用早停机制
+            # t-SNE降维
             tsne = TSNE(
                 n_components=2,
                 perplexity=perplexity,
@@ -158,7 +158,7 @@ def evaluate_tsne_params(X, perplexity_range, learning_rates, n_iter_range, metr
                 n_iter=n_iter,
                 metric=metric,
                 random_state=42,
-                n_iter_without_progress=early_stopping_patience  # 添加早停参数
+                n_iter_without_progress=early_stopping_patience  # 早停参数
             )
             X_tsne = tsne.fit_transform(X)
             
@@ -192,9 +192,9 @@ def evaluate_tsne_params(X, perplexity_range, learning_rates, n_iter_range, metr
                 'error': str(e)
             }
     
-    # 使用joblib并行执行参数评估
+    # 参数评估
     with tqdm(total=total_combinations, desc="参数调优进度") as pbar:
-        # 使用joblib的并行计算
+        # joblib并行计算
         parallel_results = Parallel(n_jobs=n_jobs)(
             delayed(evaluate_single_param_set)(params, P_high, X) for params in param_combinations
         )
