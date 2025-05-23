@@ -10,7 +10,7 @@ import pandas as pd
 import re
 import os
 
-filename = '示例'
+filename = 'data'
 
 def process_matrix_data(input_file, output_file=None):
     # 检测文件编码

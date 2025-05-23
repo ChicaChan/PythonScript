@@ -46,6 +46,9 @@ def convert_r_condition(condition):
             # 处理%in%操作符
             in_match = re.search(r'(\w+)\s*%in%\s*c\((.*?)\)', r_cond)
             if in_match:
+                # 获取整个条件字符串
+                full_condition = r_cond
+                # 获取%in%部分
                 col = in_match.group(1)
                 values = in_match.group(2)
                 value_list = [v.strip() for v in values.split(',')]
@@ -57,7 +60,20 @@ def convert_r_condition(condition):
                             value_list[i] = float(v)
                         except ValueError:
                             value_list[i] = f"'{v}'"
-                return f"{col}.isin({value_list})"
+                
+                # 替换%in%部分为pandas格式
+                in_expr = f"{col}.isin({value_list})"
+                # 替换原始条件中的%in%表达式
+                full_condition = re.sub(r'\w+\s*%in%\s*c\([^)]*\)', in_expr, full_condition)
+                
+                # 替换data$为空
+                full_condition = full_condition.replace('data$', '')
+                
+                # 确保&周围有空格
+                full_condition = full_condition.replace('&', ' & ')
+                full_condition = re.sub(r'\s+&\s+', ' & ', full_condition)
+                
+                return full_condition
             
             # 替换data$为空
             r_cond = r_cond.replace('data$', '')
@@ -231,7 +247,7 @@ def linear_programming_sampling(data_df, conditions, total, timeout=TIMEOUT, fal
             prob += total_deviation >= lpSum(all_deviations) / len(conditions), "Total_Deviation_Constraint"
             
         else:
-            # 原始版本：为每个条件使用一对偏差变量
+            # 普通方法：为每个条件使用一对偏差变量
             prob = LpProblem("Sampling_Problem", LpMinimize)
             
             # 创建决策变量
@@ -241,7 +257,7 @@ def linear_programming_sampling(data_df, conditions, total, timeout=TIMEOUT, fal
                 raw_count = row['raw_count']
                 var_dict[var_name] = LpVariable(var_name, lowBound=0, upBound=raw_count, cat='Integer')
             
-            # 偏差变量 - 用于测量与配额的差异
+            # 偏差变量
             deviation_vars = {}
             for i, cond in enumerate(conditions):
                 # 正偏差 (实际 > 配额)
@@ -417,9 +433,12 @@ def linear_programming_sampling(data_df, conditions, total, timeout=TIMEOUT, fal
 
     return sampled, original_df
 
-def generate_report(sampled, conditions, original_data, total_quota):
+def generate_report(sampled, conditions, original_data, total_quota, is_failed=False, error_message=""):
     """生成报告"""
     report = []    
+    
+    # 失败报告sampled为0
+    sampled_count = 0 if is_failed else len(sampled)
     
     total_row = {
         'condition': 'total',
@@ -427,19 +446,20 @@ def generate_report(sampled, conditions, original_data, total_quota):
         'min': total_quota,
         'max': total_quota,
         'raw': len(original_data),
-        'sampled': len(sampled),
-        'gap': len(sampled) - total_quota,
+        'sampled': sampled_count,
+        'gap': sampled_count - total_quota
     }
     report.append(total_row)
     
     # 添加各条件统计
     for cond in conditions:
         raw_count = original_data.eval(cond['condition']).sum()
-        sampled_count = sampled.eval(cond['condition']).sum()
         
-        # 验证min-max限制
-        min_ok = sampled_count >= cond['min']
-        max_ok = sampled_count <= cond['max'] if cond['max'] != float('inf') else True
+        if is_failed:
+            # 抽样数量为0
+            condition_sampled_count = 0
+        else:
+            condition_sampled_count = sampled.eval(cond['condition']).sum()
         
         row = {
             'condition': cond['condition'],
@@ -447,8 +467,8 @@ def generate_report(sampled, conditions, original_data, total_quota):
             'min': cond['min'],
             'max': cond['max'] if cond['max'] != float('inf') else 'N/A',
             'raw': raw_count,
-            'sampled': sampled_count,
-            'gap': sampled_count - cond['quota'],
+            'sampled': condition_sampled_count,
+            'gap': condition_sampled_count - cond['quota']
         }
         report.append(row)
     
@@ -502,6 +522,12 @@ def format_excel(writer, report_df):
                 gap_cell.font = Font(bold=True)
             else:
                 gap_cell.fill = PatternFill(start_color='FF00FF00', end_color='FF00FF00', fill_type='solid')
+        
+        # raw小于min时标红
+        if hasattr(row, 'raw') and hasattr(row, 'min') and row.raw < row.min:
+            raw_cell = worksheet.cell(row=row_num, column=report_df.columns.get_loc('raw') + 1)
+            raw_cell.fill = PatternFill(start_color='FFFF0000', end_color='FFFF0000', fill_type='solid')
+            raw_cell.font = Font(bold=True, color='FFFFFFFF')
 
 def main():
     try:
@@ -547,10 +573,27 @@ def main():
             print(f"日志文件保存在: {log_file}")
             
         except ValueError as ve:
-            # 抽数失败
+            # 抽数失败，生成失败报告
             logging.error(f"抽数失败: {str(ve)}")
+            
+            # 生成失败报告
+            report_df = generate_report(None, conditions, original_data, total, is_failed=True, error_message=str(ve))
+            
+            # 保存失败报告
+            output_file = os.path.join(script_dir, 'output_failed.xlsx')
+            logging.info(f"保存失败报告到: {output_file}")
+            
+            failed_data = original_data.copy()
+            failed_data['SL'] = 0
+            
+            with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+                failed_data.to_excel(writer, sheet_name='样本', index=False)
+                report_df.to_excel(writer, sheet_name='报告', index=False)
+                format_excel(writer, report_df)
+            
             print(f"\n抽数失败: {str(ve)}")
             print("请调整条件配置或数据后重试")
+            print(f"失败报告已保存到: {output_file}")
             print(f"详细错误信息请查看日志: {log_file}")
         
     except Exception as e:
